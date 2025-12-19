@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import os
+import time
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, Optional, Tuple
+
+import aiosqlite
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Position:
+    asset_id: str
+    outcome: str
+    size: float
+    market: str = ""
+    average_price: float = 0.0
+
+
+@dataclass
+class PortfolioState:
+    positions: Dict[str, Position] = field(default_factory=dict)
+    last_updated: float = field(default_factory=time.time)
+
+    @classmethod
+    def from_api(cls, items: Iterable[dict]) -> "PortfolioState":
+        positions: Dict[str, Position] = {}
+        for item in items:
+            asset_id = item.get("asset_id") or item.get("assetId")
+            if not asset_id:
+                continue
+            positions[asset_id] = Position(
+                asset_id=asset_id,
+                outcome=item.get("outcome") or item.get("outcome_id") or "",
+                size=float(item.get("quantity") or item.get("size") or 0),
+                market=item.get("market") or item.get("market_slug") or item.get("event_slug") or "",
+                average_price=float(item.get("avg_price") or item.get("price") or 0),
+            )
+        return cls(positions=positions, last_updated=time.time())
+
+    def delta_against(self, other: "PortfolioState", scale: float = 1.0) -> Dict[str, float]:
+        """Compute desired size delta (other - self) scaled."""
+        deltas: Dict[str, float] = {}
+        for asset_id, pos in other.positions.items():
+            ours = self.positions.get(asset_id)
+            diff = pos.size - (ours.size if ours else 0.0)
+            scaled = diff * scale
+            if math.isclose(scaled, 0.0, abs_tol=1e-6):
+                continue
+            deltas[asset_id] = scaled
+        return deltas
+
+    def notional(self, prices: Optional[Dict[str, float]] = None) -> float:
+        total = 0.0
+        for asset_id, pos in self.positions.items():
+            price = 1.0
+            if prices and asset_id in prices:
+                price = prices[asset_id]
+            total += abs(pos.size) * price
+        return total
+
+    def market_notional(self, market_map: Dict[str, str], prices: Dict[str, float]) -> Dict[str, float]:
+        totals: Dict[str, float] = {}
+        for asset_id, pos in self.positions.items():
+            market = market_map.get(asset_id, "unknown")
+            price = prices.get(asset_id, 1.0)
+            totals[market] = totals.get(market, 0.0) + abs(pos.size) * price
+        return totals
+
+
+class IntentStore:
+    """Idempotency and dedupe helper backed by SQLite."""
+
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
+        self._init_lock = asyncio.Lock()
+        self._initialised = False
+
+    async def _ensure(self) -> None:
+        if self._initialised:
+            return
+        async with self._init_lock:
+            if self._initialised:
+                return
+            os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS intents (
+                        target_tx TEXT NOT NULL,
+                        intent_key TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        PRIMARY KEY (target_tx, intent_key)
+                    )
+                    """
+                )
+                await db.commit()
+            self._initialised = True
+
+    async def record_intent_if_new(self, target_tx: str, intent_key: str) -> bool:
+        await self._ensure()
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute(
+                    "INSERT INTO intents (target_tx, intent_key, created_at) VALUES (?, ?, ?)",
+                    (target_tx, intent_key, time.time()),
+                )
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                return False
+
+    async def seen(self, target_tx: str, intent_key: str) -> bool:
+        await self._ensure()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT 1 FROM intents WHERE target_tx = ? AND intent_key = ? LIMIT 1",
+                (target_tx, intent_key),
+            ) as cur:
+                row = await cur.fetchone()
+                return row is not None
