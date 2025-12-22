@@ -7,7 +7,14 @@ from typing import ClassVar, List, Optional
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def _find_project_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return candidate
+    return Path(__file__).resolve().parent
+
+
+PROJECT_ROOT = _find_project_root()
 
 
 class Settings(BaseSettings):
