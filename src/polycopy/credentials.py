@@ -20,11 +20,12 @@ def derive_or_create_api_credentials(
     private_key: str,
     rest_url: str,
     chain_id: int,
+    signature_type: int,
     nonce: int | None = None,
     client_factory: ClobClientFactory = ClobClient,
 ) -> ApiCreds:
     """Create or derive CLOB API credentials using an L1 private key."""
-    client = client_factory(host=rest_url, chain_id=chain_id, key=private_key)
+    client = client_factory(host=rest_url, chain_id=chain_id, key=private_key, signature_type=signature_type)
     creds = client.create_or_derive_api_creds(nonce=nonce)
     if creds is None:
         raise RuntimeError("Failed to obtain Polymarket API credentials from CLOB")
@@ -59,6 +60,7 @@ def ensure_api_credentials(
         private_key=settings.private_key,
         rest_url=settings.clob_rest_url,
         chain_id=settings.chain_id,
+        signature_type=settings.signature_type,
         nonce=nonce,
         client_factory=client_factory,
     )
@@ -79,6 +81,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--clob-rest-url", default="https://clob.polymarket.com", help="CLOB host")
     parser.add_argument("--chain-id", type=int, default=137, help="Chain ID for signing (default 137)")
+    parser.add_argument(
+        "--signature-type",
+        type=int,
+        default=1,
+        help="Signature type: 1 for Magic/email proxy, 2 for Web3 browser wallet proxy",
+    )
     parser.add_argument("--nonce", type=int, help="Optional nonce to use when deriving credentials")
     parser.add_argument(
         "--env-format",
@@ -98,6 +106,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         private_key=args.private_key,
         rest_url=args.clob_rest_url,
         chain_id=args.chain_id,
+        signature_type=args.signature_type,
         nonce=args.nonce,
     )
 

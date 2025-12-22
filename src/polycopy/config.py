@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     data_api_url: str = "https://data-api.polymarket.com"
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     clob_rest_url: str = "https://clob.polymarket.com"
+    signature_type: int = Field(
+        1, description="Signature type for CLOB auth (1=Magic/email, 2=Web3 browser wallet)"
+    )
     chain_id: int = 137
 
     http_poll_interval: float = 1.0
@@ -54,6 +57,14 @@ class Settings(BaseSettings):
         """Validate that the copy factor remains within the inclusive range [0, 1]."""
         if not 0 <= v <= 1:
             raise ValueError("copy_factor must be within [0,1]")
+        return v
+
+    @field_validator("signature_type")
+    @classmethod
+    def _signature_type_supported(cls, v: int) -> int:
+        """Validate supported CLOB signature types."""
+        if v not in (1, 2):
+            raise ValueError("signature_type must be 1 (Magic/email) or 2 (Web3 browser wallet)")
         return v
 
 
