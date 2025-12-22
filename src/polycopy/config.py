@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import ClassVar, List, Optional
 
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+def _find_project_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
+            return candidate
+    return Path.cwd()
+
+
+PROJECT_ROOT = _find_project_root()
 
 
 class Settings(BaseSettings):
@@ -48,7 +58,9 @@ class Settings(BaseSettings):
     db_path: str = "state.sqlite3"
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_file=".env", env_prefix="", env_file_encoding="utf-8"
+        env_file=(".env", PROJECT_ROOT / ".env"),
+        env_prefix="",
+        env_file_encoding="utf-8",
     )
 
     @field_validator("copy_factor")
