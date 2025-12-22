@@ -25,6 +25,19 @@ from .util.time import check_clock_skew
 logger = logging.getLogger(__name__)
 
 
+def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
+    side_field = (event.get("side") or "").lower()
+    is_buy = event.get("is_buy")
+    if isinstance(is_buy, bool):
+        return size if is_buy else -size
+    if side_field in {"buy", "sell"}:
+        return size if side_field == "buy" else -size
+    if size < 0:
+        # Some feeds encode sells as negative sizes even without an explicit side flag.
+        return size
+    return None
+
+
 async def startup_checks(settings: Settings) -> None:
     require_api_credentials(settings)
     async with DataAPIClient(settings.data_api_url, settings.api_key) as client:  # type: ignore[arg-type]
@@ -71,16 +84,8 @@ async def process_event(
     except (TypeError, ValueError):
         return
 
-    side_field = (event.get("side") or "").lower()
-    is_buy = event.get("is_buy")
-    signed_size: float | None = None
-    if isinstance(is_buy, bool):
-        signed_size = size if is_buy else -size
-    elif side_field in {"buy", "sell"}:
-        signed_size = size if side_field == "buy" else -size
-    elif size < 0:
-        signed_size = size
-    else:
+    signed_size = _signed_size_from_event(event, size)
+    if signed_size is None:
         return
 
     market = event.get("market") or ""

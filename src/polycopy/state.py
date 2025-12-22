@@ -15,6 +15,19 @@ from .util import get_first
 logger = logging.getLogger(__name__)
 
 
+def _updated_average_price(prev_size: float, prev_avg: float, trade_size: float, trade_price: float | None) -> float:
+    if trade_price is None:
+        return prev_avg
+    new_size = prev_size + trade_size
+    if prev_size == 0:
+        return trade_price
+    if (prev_size > 0 and trade_size > 0) or (prev_size < 0 and trade_size < 0):
+        return trade_price if new_size == 0 else ((prev_avg * prev_size) + (trade_price * trade_size)) / new_size
+    if (prev_size > 0 > new_size) or (prev_size < 0 < new_size):
+        return trade_price
+    return prev_avg
+
+
 @dataclass
 class Position:
     asset_id: str
@@ -101,13 +114,13 @@ class PositionTracker:
             if not target_pos:
                 target_pos = Position(asset_id=asset_id, outcome=outcome, size=0.0, market=market)
                 self.target.positions[asset_id] = target_pos
+            prev_size = target_pos.size
             target_pos.size += size
             if market:
                 target_pos.market = market
             if outcome:
                 target_pos.outcome = outcome
-            if price is not None:
-                target_pos.average_price = price
+            target_pos.average_price = _updated_average_price(prev_size, target_pos.average_price, size, price)
             our_pos = self.ours.positions.get(asset_id)
             portfolio_notional = self.ours.notional()
             return target_pos, our_pos, portfolio_notional
@@ -120,14 +133,14 @@ class PositionTracker:
             if not our_pos:
                 our_pos = Position(asset_id=asset_id, outcome=outcome, size=0.0, market=market)
                 self.ours.positions[asset_id] = our_pos
+            prev_size = our_pos.size
             our_pos.size += size
-        if market:
-            our_pos.market = market
-        if outcome:
-            our_pos.outcome = outcome
-        if price is not None:
-            our_pos.average_price = price
-        return our_pos
+            if market:
+                our_pos.market = market
+            if outcome:
+                our_pos.outcome = outcome
+            our_pos.average_price = _updated_average_price(prev_size, our_pos.average_price, size, price)
+            return our_pos
 
     async def snapshot(self) -> tuple[PortfolioState, PortfolioState]:
         async with self._lock:
