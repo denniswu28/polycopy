@@ -18,6 +18,7 @@ from .reconcile import reconcile_loop
 from .risk import RiskLimits
 from .rtds_client import RtdsClient
 from .state import IntentStore, PortfolioState
+from .util import get_first
 from .util import logging as log_util
 from .util.time import check_clock_skew
 
@@ -119,13 +120,7 @@ async def refresh_watchlist(
             positions = await data_api.fetch_positions(target_wallet)
             watchlist.clear()
             for pos in positions:
-                market = (
-                    pos.get("market")
-                    or pos.get("market_slug")
-                    or pos.get("event_slug")
-                    or pos.get("eventSlug")
-                    or pos.get("slug")
-                )
+                market = get_first(pos, ["market", "market_slug", "event_slug", "eventSlug", "slug"])
                 if market:
                     watchlist.add(market)
         except Exception as exc:  # noqa: BLE001
