@@ -7,6 +7,8 @@ from typing import ClassVar, List, Optional
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     """Typed runtime settings loaded from environment and CLI overrides."""
@@ -49,7 +51,7 @@ class Settings(BaseSettings):
     db_path: str = "state.sqlite3"
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_file=(".env", Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_file=(".env", PROJECT_ROOT / ".env"),
         env_prefix="",
         env_file_encoding="utf-8",
     )
