@@ -105,15 +105,21 @@ def load_settings(argv: Optional[list[str]] = None) -> tuple[Settings, argparse.
         settings = Settings(**overrides)
     except ValidationError as exc:  # pragma: no cover - exercised via CLI error path
         missing: list[str] = []
+        other_messages: list[str] = []
         for err in exc.errors():
             if err.get("type") != "missing":
+                if err.get("msg"):
+                    other_messages.append(str(err["msg"]))
                 continue
             loc = err.get("loc") or ()
             if loc:
                 missing.append(str(loc[0]))
         missing_fields = ", ".join(missing) if missing else "validation failed"
-        parser.error(
-            f"Missing required settings: {missing_fields}. Provide them via environment variables or a .env file "
-            "as shown in .env.example."
-        )
+        if missing:
+            parser.error(
+                f"Missing required settings: {missing_fields}. Provide them via environment variables or a .env file "
+                "as shown in .env.example."
+            )
+        detail = "; ".join(other_messages) if other_messages else "validation failed"
+        parser.error(f"Invalid configuration: {detail}")
     return settings, args
