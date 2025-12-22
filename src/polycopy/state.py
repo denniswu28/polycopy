@@ -31,15 +31,22 @@ class PortfolioState:
     def from_api(cls, items: Iterable[dict]) -> "PortfolioState":
         positions: Dict[str, Position] = {}
         for item in items:
-            asset_id = item.get("asset_id") or item.get("assetId")
+            asset_id = item.get("asset_id") or item.get("assetId") or item.get("asset") or item.get("conditionId")
             if not asset_id:
                 continue
             positions[asset_id] = Position(
                 asset_id=asset_id,
                 outcome=item.get("outcome") or item.get("outcome_id") or "",
                 size=float(item.get("quantity") or item.get("size") or 0),
-                market=item.get("market") or item.get("market_slug") or item.get("event_slug") or "",
-                average_price=float(item.get("avg_price") or item.get("price") or 0),
+                market=(
+                    item.get("market")
+                    or item.get("market_slug")
+                    or item.get("event_slug")
+                    or item.get("eventSlug")
+                    or item.get("slug")
+                    or ""
+                ),
+                average_price=float(item.get("avg_price") or item.get("avgPrice") or item.get("price") or 0),
             )
         return cls(positions=positions, last_updated=time.time())
 

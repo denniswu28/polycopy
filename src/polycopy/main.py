@@ -119,7 +119,13 @@ async def refresh_watchlist(
             positions = await data_api.fetch_positions(target_wallet)
             watchlist.clear()
             for pos in positions:
-                market = pos.get("market") or pos.get("market_slug") or pos.get("event_slug")
+                market = (
+                    pos.get("market")
+                    or pos.get("market_slug")
+                    or pos.get("event_slug")
+                    or pos.get("eventSlug")
+                    or pos.get("slug")
+                )
                 if market:
                     watchlist.add(market)
         except Exception as exc:  # noqa: BLE001
