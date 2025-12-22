@@ -1,5 +1,4 @@
 import pytest
-from pydantic_core import PydanticUndefined
 
 from polycopy.config import Settings, load_settings
 
