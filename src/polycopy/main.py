@@ -4,7 +4,7 @@ import asyncio
 import logging
 import signal
 from typing import Any, Dict
-
+import json
 try:
     import uvloop
 except ImportError:  # pragma: no cover
@@ -29,8 +29,21 @@ async def startup_checks(settings: Settings) -> None:
     require_api_credentials(settings)
     async with DataAPIClient(settings.data_api_url, settings.api_key) as client:  # type: ignore[arg-type]
         try:
-            await client.fetch_positions(settings.target_wallet)
-            await client.fetch_trades(settings.target_wallet, limit=1)
+            positions = await client.fetch_positions(settings.target_wallet)
+            trades = await client.fetch_trades(settings.target_wallet, limit=50)
+
+            logger.info("Startup positions for target_wallet=%s:\n%s",
+                        settings.target_wallet,
+                        json.dumps(positions, indent=2)[:5000])  # truncate if huge
+            logger.info("Startup trades for target_wallet=%s:\n%s",
+                        settings.target_wallet,
+                        json.dumps(trades, indent=2)[:5000])
+
+            our_positions = await client.fetch_positions(settings.trader_wallet)
+            logger.info("Startup positions for trader_wallet=%s:\n%s",
+                        settings.trader_wallet,
+                        json.dumps(our_positions, indent=2)[:5000])
+
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(f"Startup check failed: data API unreachable ({exc})") from exc
     skew = await check_clock_skew()

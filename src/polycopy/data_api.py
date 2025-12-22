@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Tuple
-
+import json
 import httpx
 
 logger = logging.getLogger(__name__)
-
 
 class DataAPIClient:
     """Thin wrapper around the Polymarket public data API."""
@@ -26,12 +25,20 @@ class DataAPIClient:
         resp = await self._client.get("/trades", params={"user": user, "limit": limit})
         resp.raise_for_status()
         data = resp.json()
+        logger.debug(
+            "Fetched trades for user=%s limit=%s: %s",
+            user, limit, json.dumps(data, indent=2)[:5000],
+        )
         return data if isinstance(data, list) else data.get("data", [])
 
     async def fetch_positions(self, user: str) -> List[Dict[str, Any]]:
         resp = await self._client.get("/positions", params={"user": user})
         resp.raise_for_status()
         data = resp.json()
+        logger.debug(
+            "Fetched positions for user=%s: %s",
+            user, json.dumps(data, indent=2)[:5000],
+        )
         return data if isinstance(data, list) else data.get("data", [])
 
     async def fetch_book(self, asset_id: str) -> Dict[str, Any]:

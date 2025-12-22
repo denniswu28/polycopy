@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Dict
-
+import json
 import httpx
 
 from .risk import RiskLimits, RiskError, validate_trade
@@ -95,6 +95,13 @@ class ExecutionEngine:
         if self.dry_run or self.paper:
             logger.info("dry-run order %s", order)
             return {"status": "dry-run", "order": order}
+
+        logger.info(
+            "Placing order: market_id=%s asset_id=%s side=%s size=%s limit_price=%s "
+            "current_market_exposure=%s current_portfolio_exposure=%s intent_key=%s",
+            market_id, asset_id, side, size, limit_price,
+            current_market_exposure, current_portfolio_exposure, intent_key,
+        )
 
         try:
             result = await self._submit(order)
