@@ -10,10 +10,18 @@ class _StubCreds:
 
 
 class _StubClient:
-    def __init__(self, host: str, chain_id: int | None = None, key: str | None = None, **_: object) -> None:
+    def __init__(
+        self,
+        host: str,
+        chain_id: int | None = None,
+        key: str | None = None,
+        signature_type: int | None = None,
+        **_: object,
+    ) -> None:
         self.host = host
         self.chain_id = chain_id
         self.key = key
+        self.signature_type = signature_type
         self.nonce = None
 
     def create_or_derive_api_creds(self, *, nonce=None):
@@ -29,7 +37,7 @@ def test_ensure_api_credentials_derives_when_missing():
         calls.append(client)
         return client
 
-    settings = Settings(private_key="0xabc", target_wallet="0xtarget", trader_wallet="0xme")
+    settings = Settings(private_key="0xabc", target_wallet="0xtarget", trader_wallet="0xme", signature_type=2)
 
     creds = ensure_api_credentials(settings, nonce=7, client_factory=factory)
 
@@ -38,6 +46,7 @@ def test_ensure_api_credentials_derives_when_missing():
     assert settings.api_passphrase == "derived-pass"
     assert creds.api_key == "derived-key"
     assert calls and calls[0].nonce == 7
+    assert calls[0].signature_type == 2
 
 
 def test_ensure_api_credentials_keeps_existing():

@@ -37,6 +37,7 @@ python -m polycopy.main --healthcheck # run startup checks then exit
 
 ## Configuration (.env)
 See `.env.example` for required keys. Notable settings:
+- `SIGNATURE_TYPE` controls CLOB signing: `1` for Email/Magic proxy (default), `2` for Web3 browser wallets (Metamask/Coinbase, etc.).
 - `COPY_FACTOR` (0–1) scales target sizes.
 - `HTTP_POLL_INTERVAL`, `RECONCILE_INTERVAL`, `QUEUE_MAXSIZE`.
 - Risk caps: `MAX_NOTIONAL_PER_TRADE`, `MAX_NOTIONAL_PER_MARKET`, `MAX_PORTFOLIO_EXPOSURE`, `MIN_TRADE_SIZE`, `SLIPPAGE_BPS`.
