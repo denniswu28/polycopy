@@ -75,6 +75,65 @@ class PortfolioState:
         return totals
 
 
+class PositionTracker:
+    """In-memory tracker for target and local portfolio states."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self.target = PortfolioState()
+        self.ours = PortfolioState()
+
+    async def refresh(self, *, target_positions: Iterable[dict], our_positions: Iterable[dict]) -> None:
+        async with self._lock:
+            self.target = PortfolioState.from_api(target_positions)
+            self.ours = PortfolioState.from_api(our_positions)
+
+    async def replace(self, *, target_state: PortfolioState, our_state: PortfolioState) -> None:
+        async with self._lock:
+            self.target = target_state
+            self.ours = our_state
+
+    async def update_target_from_trade(
+        self, *, asset_id: str, outcome: str, market: str, size: float, price: float | None
+    ) -> tuple[Position, Position | None, float]:
+        async with self._lock:
+            target_pos = self.target.positions.get(asset_id)
+            if not target_pos:
+                target_pos = Position(asset_id=asset_id, outcome=outcome, size=0.0, market=market)
+                self.target.positions[asset_id] = target_pos
+            target_pos.size += size
+            if market:
+                target_pos.market = market
+            if outcome:
+                target_pos.outcome = outcome
+            if price is not None:
+                target_pos.average_price = price
+            our_pos = self.ours.positions.get(asset_id)
+            portfolio_notional = self.ours.notional()
+            return target_pos, our_pos, portfolio_notional
+
+    async def apply_our_execution(
+        self, *, asset_id: str, outcome: str, market: str, size: float, price: float
+    ) -> Position:
+        async with self._lock:
+            our_pos = self.ours.positions.get(asset_id)
+            if not our_pos:
+                our_pos = Position(asset_id=asset_id, outcome=outcome, size=0.0, market=market)
+                self.ours.positions[asset_id] = our_pos
+            our_pos.size += size
+            if market:
+                our_pos.market = market
+            if outcome:
+                our_pos.outcome = outcome
+            if price:
+                our_pos.average_price = price
+            return our_pos
+
+    async def snapshot(self) -> tuple[PortfolioState, PortfolioState]:
+        async with self._lock:
+            return self.target, self.ours
+
+
 class IntentStore:
     """Idempotency and dedupe helper backed by SQLite."""
 
