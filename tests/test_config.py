@@ -1,8 +1,6 @@
-from pathlib import Path
-
 import pytest
 
-from polycopy.config import Settings, load_settings
+from polycopy.config import PROJECT_ROOT, Settings, load_settings
 
 
 def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
@@ -23,8 +21,7 @@ def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
 
 
 def test_load_settings_reads_project_env_when_cwd_differs(monkeypatch, tmp_path):
-    project_root = Path(__file__).resolve().parent.parent
-    env_path = project_root / ".env"
+    env_path = PROJECT_ROOT / ".env"
     original_contents = env_path.read_text() if env_path.exists() else None
     env_path.write_text("PRIVATE_KEY=fromenv\nTARGET_WALLET=0xAA\nTRADER_WALLET=0xBB\n")
 
