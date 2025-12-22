@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from polycopy.config import Settings, load_settings
@@ -18,3 +20,25 @@ def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
     assert "Missing required settings" in err
     for field in required_fields:
         assert field in err
+
+
+def test_load_settings_reads_project_env_when_cwd_differs(monkeypatch, tmp_path):
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = project_root / ".env"
+    original_contents = env_path.read_text() if env_path.exists() else None
+    env_path.write_text("PRIVATE_KEY=fromenv\nTARGET_WALLET=0xAA\nTRADER_WALLET=0xBB\n")
+
+    for var in ("PRIVATE_KEY", "TARGET_WALLET", "TRADER_WALLET"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    try:
+        settings, _ = load_settings([])
+        assert settings.private_key == "fromenv"
+        assert settings.target_wallet == "0xAA"
+        assert settings.trader_wallet == "0xBB"
+    finally:
+        if original_contents is None:
+            env_path.unlink(missing_ok=True)
+        else:
+            env_path.write_text(original_contents)

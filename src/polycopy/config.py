@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import ClassVar, List, Optional
 
 from pydantic import Field, ValidationError, field_validator
@@ -48,7 +49,9 @@ class Settings(BaseSettings):
     db_path: str = "state.sqlite3"
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_file=".env", env_prefix="", env_file_encoding="utf-8"
+        env_file=(".env", Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="",
+        env_file_encoding="utf-8",
     )
 
     @field_validator("copy_factor")
