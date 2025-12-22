@@ -121,13 +121,13 @@ class PositionTracker:
                 our_pos = Position(asset_id=asset_id, outcome=outcome, size=0.0, market=market)
                 self.ours.positions[asset_id] = our_pos
             our_pos.size += size
-            if market:
-                our_pos.market = market
-            if outcome:
-                our_pos.outcome = outcome
-            if price:
-                our_pos.average_price = price
-            return our_pos
+        if market:
+            our_pos.market = market
+        if outcome:
+            our_pos.outcome = outcome
+        if price is not None:
+            our_pos.average_price = price
+        return our_pos
 
     async def snapshot(self) -> tuple[PortfolioState, PortfolioState]:
         async with self._lock:

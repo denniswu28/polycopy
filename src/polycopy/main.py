@@ -73,12 +73,15 @@ async def process_event(
 
     side_field = (event.get("side") or "").lower()
     is_buy = event.get("is_buy")
+    signed_size: float | None = None
     if isinstance(is_buy, bool):
         signed_size = size if is_buy else -size
     elif side_field in {"buy", "sell"}:
         signed_size = size if side_field == "buy" else -size
-    else:
+    elif size < 0:
         signed_size = size
+    else:
+        return
 
     market = event.get("market") or ""
     outcome = event.get("outcome") or ""
