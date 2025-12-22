@@ -75,7 +75,7 @@ class BackstopPoller:
             "type": "target_trade_event",
             "tx_hash": trade.get("transactionHash") or trade.get("txHash"),
             "market": trade.get("market") or trade.get("market_slug"),
-            "asset_id": trade.get("asset_id") or trade.get("assetId"),
+            "asset_id": trade.get("asset_id") or trade.get("assetId") or trade.get("asset"),
             "outcome": trade.get("outcome"),
             "size": trade.get("size"),
             "price": trade.get("price"),

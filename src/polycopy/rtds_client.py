@@ -69,7 +69,7 @@ class RtdsClient:
             "type": "target_trade_event",
             "tx_hash": payload.get("txHash") or payload.get("transactionHash"),
             "market": payload.get("market_slug") or payload.get("market"),
-            "asset_id": payload.get("asset_id") or payload.get("assetId"),
+            "asset_id": payload.get("asset_id") or payload.get("assetId") or payload.get("asset"),
             "outcome": payload.get("outcome"),
             "size": payload.get("size"),
             "price": payload.get("price"),

@@ -10,6 +10,8 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import aiosqlite
 
+from .util import get_first
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,15 +33,15 @@ class PortfolioState:
     def from_api(cls, items: Iterable[dict]) -> "PortfolioState":
         positions: Dict[str, Position] = {}
         for item in items:
-            asset_id = item.get("asset_id") or item.get("assetId")
+            asset_id = get_first(item, ["asset_id", "assetId", "asset", "conditionId"])
             if not asset_id:
                 continue
             positions[asset_id] = Position(
                 asset_id=asset_id,
-                outcome=item.get("outcome") or item.get("outcome_id") or "",
-                size=float(item.get("quantity") or item.get("size") or 0),
-                market=item.get("market") or item.get("market_slug") or item.get("event_slug") or "",
-                average_price=float(item.get("avg_price") or item.get("price") or 0),
+                outcome=get_first(item, ["outcome", "outcome_id"], ""),
+                size=float(get_first(item, ["quantity", "size"], 0)),
+                market=get_first(item, ["market", "market_slug", "event_slug", "eventSlug", "slug"], ""),
+                average_price=float(get_first(item, ["avg_price", "avgPrice", "price"], 0)),
             )
         return cls(positions=positions, last_updated=time.time())
 
