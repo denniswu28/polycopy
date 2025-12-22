@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import httpx
 
@@ -20,6 +20,7 @@ class ExecutionEngine:
         rest_url: str,
         api_key: str,
         api_secret: str,
+        api_passphrase: str | None,
         private_key: str,
         intent_store: IntentStore,
         risk_limits: RiskLimits,
@@ -32,10 +33,13 @@ class ExecutionEngine:
         self.risk_limits = risk_limits
         self.dry_run = dry_run
         self.paper = paper
+        headers = {"X-API-Key": api_key, "X-API-Secret": api_secret}
+        if api_passphrase:
+            headers["X-API-Passphrase"] = api_passphrase
         self._client = httpx.AsyncClient(
             base_url=self.rest_url,
             timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
-            headers={"X-API-Key": api_key, "X-API-Secret": api_secret},
+            headers=headers,
         )
         self.private_key = private_key
         self.wallet_address = wallet_address

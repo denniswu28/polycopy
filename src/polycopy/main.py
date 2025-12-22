@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
 
 from .clob_exec import ExecutionEngine
 from .config import Settings, load_settings
+from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
 from .reconcile import reconcile_loop
 from .risk import RiskLimits
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 async def startup_checks(settings: Settings) -> None:
+    require_api_credentials(settings)
     async with DataAPIClient(settings.data_api_url, settings.api_key) as client:  # type: ignore[arg-type]
         try:
             await client.fetch_positions(settings.target_wallet)
@@ -133,6 +135,7 @@ async def main_async(argv: list[str] | None = None) -> None:
         uvloop.install()
     log_util.setup_logging()
     settings, args = load_settings(argv)
+    ensure_api_credentials(settings)
 
     if args.healthcheck:
         await startup_checks(settings)
@@ -142,13 +145,14 @@ async def main_async(argv: list[str] | None = None) -> None:
     await startup_checks(settings)
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=settings.queue_maxsize)
-    data_api = DataAPIClient(settings.data_api_url, settings.api_key)
+    data_api = DataAPIClient(settings.data_api_url, settings.api_key)  # type: ignore[arg-type]
     risk_limits = RiskLimits.from_settings(settings)
     intent_store = IntentStore(settings.db_path)
     executor = ExecutionEngine(
         rest_url=settings.clob_rest_url,
-        api_key=settings.api_key,
-        api_secret=settings.api_secret,
+        api_key=settings.api_key,  # type: ignore[arg-type]
+        api_secret=settings.api_secret,  # type: ignore[arg-type]
+        api_passphrase=settings.api_passphrase,
         private_key=settings.private_key,
         intent_store=intent_store,
         risk_limits=risk_limits,

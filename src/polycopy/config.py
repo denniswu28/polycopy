@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,14 +11,16 @@ class Settings(BaseSettings):
     """Typed runtime settings loaded from environment and CLI overrides."""
 
     private_key: str = Field(..., description="Private key for signing CLOB requests")
-    api_key: str = Field(..., description="API key for Polymarket data access")
-    api_secret: str = Field(..., description="API secret for Polymarket data access")
+    api_key: Optional[str] = Field(None, description="API key for Polymarket data access")
+    api_secret: Optional[str] = Field(None, description="API secret for Polymarket data access")
+    api_passphrase: Optional[str] = Field(None, description="API passphrase for Polymarket data access")
     target_wallet: str = Field(..., description="Wallet address to mirror")
     trader_wallet: str = Field(..., description="Our own wallet address used for trading")
 
     data_api_url: str = "https://data-api.polymarket.com"
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     clob_rest_url: str = "https://clob.polymarket.com"
+    chain_id: int = 137
 
     http_poll_interval: float = 1.0
     reconcile_interval: float = 30.0
@@ -42,7 +44,7 @@ class Settings(BaseSettings):
 
     db_path: str = "state.sqlite3"
 
-    model_config = SettingsConfigModel = SettingsConfigDict(
+    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_file=".env", env_prefix="", env_file_encoding="utf-8"
     )
 

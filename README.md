@@ -19,7 +19,7 @@ Polycopy is a fail-fast, resilient MVP bot that mirrors a target trader’s posi
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
-2. Copy `.env.example` to `.env` and fill in credentials (private key, API key/secret, wallets).
+2. Copy `.env.example` to `.env` and fill in credentials (private key, wallets). API credentials are derived automatically from your private key; run `python -m polycopy.credentials --env-format` if you need to persist them.
 
 ## Running
 ```bash
