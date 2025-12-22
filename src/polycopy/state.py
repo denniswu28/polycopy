@@ -38,10 +38,10 @@ class PortfolioState:
                 continue
             positions[asset_id] = Position(
                 asset_id=asset_id,
-                outcome=item.get("outcome") or item.get("outcome_id") or "",
-                size=float(get_first(item, ["quantity", "size"], 0) or 0),
+                outcome=get_first(item, ["outcome", "outcome_id"], ""),
+                size=float(get_first(item, ["quantity", "size"], 0)),
                 market=get_first(item, ["market", "market_slug", "event_slug", "eventSlug", "slug"], ""),
-                average_price=float(get_first(item, ["avg_price", "avgPrice", "price"], 0) or 0),
+                average_price=float(get_first(item, ["avg_price", "avgPrice", "price"], 0)),
             )
         return cls(positions=positions, last_updated=time.time())
 
