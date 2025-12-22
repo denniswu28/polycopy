@@ -5,8 +5,8 @@ from polycopy.config import Settings, load_settings
 
 def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
     required_fields = [name for name, field in Settings.model_fields.items() if field.is_required()]
-    for env in (field.upper() for field in required_fields):
-        monkeypatch.delenv(env, raising=False)
+    for env_var in (field.upper() for field in required_fields):
+        monkeypatch.delenv(env_var, raising=False)
 
     with pytest.raises(SystemExit):
         load_settings([])

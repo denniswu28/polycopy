@@ -109,8 +109,8 @@ def load_settings(argv: Optional[list[str]] = None) -> tuple[Settings, argparse.
             if err.get("type") != "missing":
                 continue
             loc = err.get("loc") or ()
-            if len(loc) > 0:
-                missing.append(loc[0])
+            if loc:
+                missing.append(str(loc[0]))
         missing_fields = ", ".join(missing) if missing else "validation failed"
         parser.error(
             f"Missing required settings: {missing_fields}. Provide them via environment variables or a .env file "
