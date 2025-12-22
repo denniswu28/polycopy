@@ -1,10 +1,11 @@
 import pytest
 
-from polycopy.config import load_settings
+from polycopy.config import Settings, load_settings
 
 
 def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
-    for env in ("PRIVATE_KEY", "TARGET_WALLET", "TRADER_WALLET"):
+    required_fields = [name for name, field in Settings.model_fields.items() if field.is_required()]
+    for env in (field.upper() for field in required_fields):
         monkeypatch.delenv(env, raising=False)
 
     with pytest.raises(SystemExit):
@@ -12,5 +13,5 @@ def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert "Missing required settings" in err
-    for field in ("private_key", "target_wallet", "trader_wallet"):
+    for field in required_fields:
         assert field in err
