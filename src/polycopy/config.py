@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import ClassVar, List, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -101,5 +101,24 @@ def load_settings(argv: Optional[list[str]] = None) -> tuple[Settings, argparse.
     if args.reconcile_interval:
         overrides["reconcile_interval"] = args.reconcile_interval
 
-    settings = Settings(**overrides)
+    try:
+        settings = Settings(**overrides)
+    except ValidationError as exc:  # pragma: no cover - exercised via CLI error path
+        missing: list[str] = []
+        other_messages: list[str] = []
+        for err in exc.errors():
+            if err.get("type") != "missing":
+                if err.get("msg"):
+                    other_messages.append(str(err["msg"]))
+                continue
+            loc = err.get("loc") or ()
+            if loc:
+                missing.append(str(loc[0]))
+        if missing:
+            parser.error(
+                f"Missing required settings: {', '.join(missing)}. Provide them via environment variables or a .env file "
+                "as shown in .env.example."
+            )
+        detail = "; ".join(other_messages) if other_messages else "validation failed"
+        parser.error(f"Invalid configuration: {detail}")
     return settings, args
