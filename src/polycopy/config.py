@@ -11,7 +11,7 @@ def _find_project_root() -> Path:
     for candidate in Path(__file__).resolve().parents:
         if (candidate / "pyproject.toml").exists() or (candidate / ".git").exists():
             return candidate
-    return Path(__file__).resolve().parent
+    return Path.cwd()
 
 
 PROJECT_ROOT = _find_project_root()
