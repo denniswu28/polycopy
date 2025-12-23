@@ -16,6 +16,8 @@ _HEADER = struct.Struct("<II")
 DEFAULT_SHM_NAME = "polycopy_live_view"
 DEFAULT_SHM_SIZE = 1_048_576
 DEFAULT_FIFO_LIMIT = 200
+_READ_RETRIES = 3
+_READ_SLEEP_SECONDS = 0.001
 logger = logging.getLogger(__name__)
 
 
@@ -86,7 +88,6 @@ def _trade_dict(event: Mapping[str, Any], *, kind: str) -> dict | None:
 
 class _SharedBuffer:
     def __init__(self, *, name: str, size: int, create: bool) -> None:
-        self._name = name
         self._shm = shared_memory.SharedMemory(name=name, create=create, size=size if create else 0)
         self.size = self._shm.size
         self._data_capacity = max(0, self.size - _HEADER.size)
@@ -114,17 +115,17 @@ class _SharedBuffer:
         _HEADER.pack_into(self._shm.buf, 0, in_progress + 1, len(data))
 
     def read(self) -> dict:
-        for _ in range(3):
+        for _ in range(_READ_RETRIES):
             version_first, length = _HEADER.unpack_from(self._shm.buf, 0)
             if version_first % 2 == 1:
-                time.sleep(0.001)
+                time.sleep(_READ_SLEEP_SECONDS)
                 continue
             if length <= 0 or length > self._data_capacity:
                 return {}
             raw = bytes(self._shm.buf[_HEADER.size : _HEADER.size + length])
             version_second, _ = _HEADER.unpack_from(self._shm.buf, 0)
             if version_first != version_second or version_first % 2 == 1:
-                time.sleep(0.001)
+                time.sleep(_READ_SLEEP_SECONDS)
                 continue
             if not raw:
                 return {}

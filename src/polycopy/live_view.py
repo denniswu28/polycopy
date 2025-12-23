@@ -131,7 +131,7 @@ async def _render_loop(*, shm_name: str, refresh: float) -> None:
     except FileNotFoundError as exc:  # pragma: no cover - runtime path
         raise SystemExit(
             f"Shared memory segment '{shm_name}' not found. Start python -m polycopy.main with --dry-run/--paper "
-            f"and matching --shm-name (default: {DEFAULT_SHM_NAME})."
+            f"and ensure both main and live_view use the same --shm-name (default: {DEFAULT_SHM_NAME})."
         ) from exc
     while True:
         snapshot = reader.read()
