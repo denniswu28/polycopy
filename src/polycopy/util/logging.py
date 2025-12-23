@@ -48,5 +48,5 @@ def setup_logging() -> None:
         file_handler = logging.FileHandler(log_path)
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
-    except OSError:
-        pass
+    except OSError as exc:
+        root.warning("file logging disabled: %s", exc)

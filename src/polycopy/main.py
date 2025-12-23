@@ -44,7 +44,11 @@ def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
 
 
 def _side_from_size(value: float) -> str:
-    return "buy" if value > 0 else "sell"
+    if value > 0:
+        return "buy"
+    if value < 0:
+        return "sell"
+    return ""
 
 
 async def live_view_update_positions(writer: LiveViewWriter, tracker: PositionTracker) -> None:

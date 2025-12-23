@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import struct
 import time
 from collections import deque
@@ -15,6 +16,7 @@ _HEADER = struct.Struct("<II")
 DEFAULT_SHM_NAME = "polycopy_live_view"
 DEFAULT_SHM_SIZE = 1_048_576
 DEFAULT_FIFO_LIMIT = 200
+logger = logging.getLogger(__name__)
 
 
 def _value(obj: Mapping[str, Any] | Position, keys: tuple[str, ...], default: Any = None) -> Any:
@@ -26,10 +28,10 @@ def _value(obj: Mapping[str, Any] | Position, keys: tuple[str, ...], default: An
     return default
 
 
-def _position_dict(obj: Mapping[str, Any] | Position) -> dict | None:
+def _position_dict(obj: Mapping[str, Any] | Position) -> dict:
     asset_id = _value(obj, ("asset_id", "assetId", "asset", "conditionId"))
     if not asset_id:
-        return None
+        return {}
     try:
         size = float(_value(obj, ("size", "quantity"), 0) or 0)
     except (TypeError, ValueError):
@@ -103,6 +105,7 @@ class _SharedBuffer:
     def write(self, payload: Mapping[str, Any]) -> None:
         data = orjson.dumps(payload)
         if len(data) > self._data_capacity:
+            logger.warning("live view payload exceeded shared memory capacity; truncating to error message")
             data = orjson.dumps({"error": "live view payload too large"})
         version, _ = _HEADER.unpack_from(self._shm.buf, 0)
         in_progress = version + 1 if version % 2 == 0 else version
@@ -127,7 +130,8 @@ class _SharedBuffer:
                 return {}
             try:
                 return orjson.loads(raw)
-            except Exception:  # noqa: BLE001
+            except orjson.JSONDecodeError:
+                logger.warning("live view payload decode failed", exc_info=True)
                 return {}
         return {}
 
