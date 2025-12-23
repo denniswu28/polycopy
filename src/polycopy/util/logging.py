@@ -4,9 +4,12 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 import orjson
+
+from ..config import PROJECT_ROOT
 
 
 class JsonFormatter(logging.Formatter):
@@ -30,11 +33,20 @@ def setup_logging() -> None:
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
     log_json = os.environ.get("LOG_JSON", "1") != "0"
     handler = logging.StreamHandler(sys.stdout)
+    formatter: logging.Formatter
     if log_json:
-        handler.setFormatter(JsonFormatter())
+        formatter = JsonFormatter()
     else:
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+        formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    handler.setFormatter(formatter)
     root = logging.getLogger()
     root.setLevel(level)
     root.handlers.clear()
     root.addHandler(handler)
+    log_path = Path(os.environ.get("LOG_FILE") or str(PROJECT_ROOT / "polycopy.log"))
+    try:
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except OSError as exc:
+        root.warning("file logging disabled: %s", exc)
