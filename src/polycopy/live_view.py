@@ -25,17 +25,20 @@ def _format_ts(value: object | None) -> str:
 
 
 def _render_positions(positions: Iterable[Mapping[str, object]]) -> str:
+    def _position_sort_key(position: Mapping[str, object]) -> str:
+        return str(get_first(position, ["market", "market_slug", "event_slug", "eventSlug", "slug"], "") or "")
+
     lines = ["Positions (target wallet)"]
     lines.append(f"{'Market':32} {'Outcome':8} {'Size':>10} {'AvgPx':>8}")
-    for pos in sorted(positions, key=lambda p: str(get_first(p, ['market', 'market_slug', 'slug'], ''))):
+    for pos in sorted(positions, key=_position_sort_key):
         market = get_first(pos, ["market", "market_slug", "event_slug", "eventSlug", "slug"], "") or ""
         outcome = get_first(pos, ["outcome", "outcome_id"], "") or ""
         try:
-            size_val = float(get_first(pos, ["size", "quantity"], 0))
+            size_val = float(get_first(pos, ["size", "quantity"], 0) or 0)
         except (TypeError, ValueError):
             size_val = 0.0
         try:
-            avg_price = float(get_first(pos, ["avg_price", "avgPrice", "price"], 0))
+            avg_price = float(get_first(pos, ["avg_price", "avgPrice", "price"], 0) or 0)
         except (TypeError, ValueError):
             avg_price = 0.0
         lines.append(f"{market[:32]:32} {outcome[:8]:8} {size_val:10.2f} {avg_price:8.3f}")
@@ -54,13 +57,18 @@ def _render_trades(trades: Iterable[Mapping[str, object]], seen: set[str]) -> st
         tx_hash = str(get_first(trade, ["transactionHash", "txHash", "tx_hash"], "") or "")
         side = (get_first(trade, ["side"], "") or "").lower()
         if not side:
-            side = "buy" if trade.get("is_buy") or trade.get("isBuy") else "sell"
+            if trade.get("is_buy") is True or trade.get("isBuy") is True:
+                side = "buy"
+            elif trade.get("is_buy") is False or trade.get("isBuy") is False:
+                side = "sell"
+            else:
+                side = ""
         try:
-            size_val = float(trade.get("size", 0))
+            size_val = float(trade.get("size") or 0)
         except (TypeError, ValueError):
             size_val = 0.0
         try:
-            price_val = float(trade.get("price", 0))
+            price_val = float(trade.get("price") or 0)
         except (TypeError, ValueError):
             price_val = 0.0
         outcome = str(get_first(trade, ["outcome"], "") or "")[:8]
@@ -81,7 +89,7 @@ async def _render_loop(
     refresh: float,
     limit: int,
 ) -> None:
-    async with DataAPIClient(data_api_url, api_key) as client:  # type: ignore[arg-type]
+    async with DataAPIClient(data_api_url, api_key) as client:
         seen: set[str] = set()
         while True:
             trades = await client.fetch_trades(target_wallet, limit=limit)

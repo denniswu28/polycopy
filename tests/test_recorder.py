@@ -29,7 +29,7 @@ async def test_recorder_dedupes_trades_and_positions(tmp_path):
 
     pos = Position(asset_id="asset1", outcome="YES", size=1.0, market="m1", average_price=0.5)
     await recorder.record_position(pos)
-    await recorder.record_position({"asset_id": "asset1", "size": 1.0, "avg_price": 0.5, "outcome": "YES"})
+    await recorder.record_position({"asset_id": "asset1", "size": 1.0, "average_price": 0.5, "outcome": "YES"})
 
     # new size should create a second entry
     await recorder.record_position(Position(asset_id="asset1", outcome="YES", size=2.0, market="m1", average_price=0.6))

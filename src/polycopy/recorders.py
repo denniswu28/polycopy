@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import time
+import datetime as dt
+import logging
 from pathlib import Path
 from typing import Iterable, Mapping, MutableSet
 
 from .state import Position
 from .util import get_first
+
+logger = logging.getLogger(__name__)
 
 
 class TargetCsvRecorder:
@@ -54,9 +57,8 @@ class TargetCsvRecorder:
                         key = key_fn(row)
                         if key:
                             store.add(key)
-            except Exception:  # noqa: BLE001
-                # If the file is malformed, ignore it and start fresh for this session.
-                continue
+            except (csv.Error, OSError) as exc:
+                logger.debug("Failed to load existing CSV %s: %s", path, exc)
 
     @staticmethod
     def _trade_key_from_row(row: Mapping[str, str]) -> tuple[str, str] | None:
@@ -92,8 +94,8 @@ class TargetCsvRecorder:
             return None
         outcome = str(get_first(data, ["outcome", "outcome_id"], "") or "")
         try:
-            size = float(get_first(data, ["size", "quantity"], 0))
-            avg_price = float(get_first(data, ["avg_price", "avgPrice", "price"], 0))
+            size = float(get_first(data, ["size", "quantity"], 0) or 0)
+            avg_price = float(get_first(data, ["avg_price", "avgPrice", "average_price"], 0) or 0)
         except (TypeError, ValueError):
             return None
         return (str(asset_id), outcome, size, avg_price)
@@ -110,7 +112,7 @@ class TargetCsvRecorder:
             elif event.get("isBuy") is not None:
                 side = "buy" if bool(event.get("isBuy")) else "sell"
         row = {
-            "recorded_at": time.time(),
+            "recorded_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
             "tx_hash": key[0],
             "asset_id": key[1],
             "market": get_first(event, ["market", "market_slug"], "") or "",
@@ -142,7 +144,7 @@ class TargetCsvRecorder:
         asset_id, outcome, size, avg_price = key
         market = get_first(position, ["market", "market_slug", "event_slug", "eventSlug", "slug"], "") or ""
         return {
-            "recorded_at": time.time(),
+            "recorded_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
             "asset_id": asset_id,
             "market": market,
             "outcome": outcome,

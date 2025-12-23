@@ -25,6 +25,8 @@ from .util import logging as log_util
 from .util.time import check_clock_skew
 
 logger = logging.getLogger(__name__)
+# Limit initial trade CSV backfill to a manageable batch to avoid large downloads on startup.
+INITIAL_TRADE_LOG_LIMIT = 200
 
 
 def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
@@ -243,7 +245,9 @@ async def main_async(argv: list[str] | None = None) -> None:
     if recorder:
         await recorder.record_positions(target_positions)
         try:
-            await recorder.record_trades(await data_api.fetch_trades(settings.target_wallet, limit=200))
+            await recorder.record_trades(
+                await data_api.fetch_trades(settings.target_wallet, limit=INITIAL_TRADE_LOG_LIMIT)
+            )
         except Exception:  # noqa: BLE001
             logger.debug("initial trade recording failed", exc_info=True)
 
