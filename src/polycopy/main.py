@@ -15,6 +15,7 @@ from .clob_exec import ExecutionEngine
 from .config import Settings, load_settings
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
+from .live_shared import LiveViewWriter
 from .reconcile import reconcile_loop
 from .recorders import TargetCsvRecorder
 from .risk import RiskLimits
@@ -40,6 +41,11 @@ def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
         # Some feeds encode sells as negative sizes even without an explicit side flag.
         return size
     return None
+
+
+async def live_view_update_positions(writer: LiveViewWriter, tracker: PositionTracker) -> None:
+    target_state, our_state = await tracker.snapshot()
+    writer.update_positions(target=target_state, ours=our_state)
 
 
 async def startup_checks(settings: Settings) -> None:
@@ -77,6 +83,7 @@ async def process_event(
     risk_limits: RiskLimits,
     position_tracker: PositionTracker,
     recorder: TargetCsvRecorder | None = None,
+    live_view: LiveViewWriter | None = None,
 ) -> None:
     asset_id = event.get("asset_id")
     if not asset_id:
@@ -103,6 +110,7 @@ async def process_event(
         price = float(price_val) if price_val is not None else None
     except (TypeError, ValueError):
         price = None
+    side = "buy" if signed_size > 0 else "sell"
 
     target_pos, current_pos, portfolio_notional = await position_tracker.update_target_from_trade(
         asset_id=asset_id,
@@ -113,6 +121,19 @@ async def process_event(
     )
     if recorder:
         await recorder.record_position(target_pos)
+    if live_view:
+        live_view.record_target_trade(
+            {
+                "asset_id": asset_id,
+                "market": market,
+                "outcome": outcome,
+                "size": signed_size,
+                "price": price,
+                "side": side,
+                "timestamp": event.get("timestamp"),
+            }
+        )
+        await live_view_update_positions(live_view, position_tracker)
 
     desired = target_pos.size * settings.copy_factor
     current_size = current_pos.size if current_pos else 0.0
@@ -142,6 +163,16 @@ async def process_event(
         size=delta,
         price=price_used,
     )
+    if live_view:
+        live_view.record_order(
+            asset_id=asset_id,
+            market=market_id,
+            outcome=target_pos.outcome,
+            side="buy" if delta > 0 else "sell",
+            size=abs(delta),
+            price=price_used,
+        )
+        await live_view_update_positions(live_view, position_tracker)
 
 
 async def consume_events(
@@ -154,6 +185,7 @@ async def consume_events(
     kill_switch_threshold: int,
     position_tracker: PositionTracker,
     recorder: TargetCsvRecorder | None = None,
+    live_view: LiveViewWriter | None = None,
 ) -> None:
     failures = 0
     while not stop_event.is_set():
@@ -170,6 +202,7 @@ async def consume_events(
                 risk_limits=risk_limits,
                 position_tracker=position_tracker,
                 recorder=recorder,
+                live_view=live_view,
             )
             failures = 0
         except Exception as exc:  # noqa: BLE001
@@ -232,24 +265,30 @@ async def main_async(argv: list[str] | None = None) -> None:
         paper=settings.paper_mode,
     )
     recorder: TargetCsvRecorder | None = None
+    live_view_writer: LiveViewWriter | None = None
     if settings.dry_run or settings.paper_mode:
         base_dir = Path(settings.db_path).resolve().parent
         recorder = TargetCsvRecorder(
             trades_path=base_dir / "target_trades.csv",
             positions_path=base_dir / "target_positions.csv",
         )
+        live_view_writer = LiveViewWriter()
     position_tracker = PositionTracker()
     target_positions = await data_api.fetch_positions(settings.target_wallet)
     our_positions = await data_api.fetch_positions(settings.trader_wallet)
     await position_tracker.refresh(target_positions=target_positions, our_positions=our_positions)
+    initial_trades: list[dict] | None = None
     if recorder:
         await recorder.record_positions(target_positions)
         try:
-            await recorder.record_trades(
-                await data_api.fetch_trades(settings.target_wallet, limit=INITIAL_TRADE_LOG_LIMIT)
-            )
+            initial_trades = await data_api.fetch_trades(settings.target_wallet, limit=INITIAL_TRADE_LOG_LIMIT)
+            await recorder.record_trades(initial_trades)
         except Exception:  # noqa: BLE001
             logger.debug("initial trade recording failed", exc_info=True)
+    if live_view_writer:
+        live_view_writer.update_positions(target=target_positions, ours=our_positions)
+        if initial_trades:
+            live_view_writer.seed_trades(initial_trades)
 
     stop_event = asyncio.Event()
     watchlist: set[str] = set()
@@ -286,6 +325,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 kill_switch_threshold=settings.kill_switch_threshold,
                 position_tracker=position_tracker,
                 recorder=recorder,
+                live_view=live_view_writer,
             ),
             name="consumer",
         ),
@@ -310,6 +350,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 interval=settings.reconcile_interval,
                 stop_event=stop_event,
                 position_tracker=position_tracker,
+                live_view=live_view_writer,
             ),
             name="reconcile",
         ),
@@ -325,6 +366,9 @@ async def main_async(argv: list[str] | None = None) -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
     await executor.close()
     await data_api.close()
+    if live_view_writer:
+        live_view_writer.close()
+        live_view_writer.unlink()
 
 
 def main() -> None:
