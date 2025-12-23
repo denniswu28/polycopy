@@ -17,12 +17,25 @@ from .data_api import BackstopPoller, DataAPIClient
 from .reconcile import reconcile_loop
 from .risk import RiskLimits
 from .rtds_client import RtdsClient
-from .state import IntentStore, PortfolioState
+from .state import IntentStore, PositionTracker, PortfolioState
 from .util import get_first
 from .util import logging as log_util
 from .util.time import check_clock_skew
 
 logger = logging.getLogger(__name__)
+
+
+def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
+    side_field = (event.get("side") or "").lower()
+    is_buy = event.get("is_buy")
+    if isinstance(is_buy, bool):
+        return size if is_buy else -size
+    if side_field in {"buy", "sell"}:
+        return size if side_field == "buy" else -size
+    if size < 0:
+        # Some feeds encode sells as negative sizes even without an explicit side flag.
+        return size
+    return None
 
 
 async def startup_checks(settings: Settings) -> None:
@@ -58,24 +71,47 @@ async def process_event(
     data_api: DataAPIClient,
     executor: ExecutionEngine,
     risk_limits: RiskLimits,
+    position_tracker: PositionTracker,
 ) -> None:
-    target_state = PortfolioState.from_api(await data_api.fetch_positions(settings.target_wallet))
-    our_state = PortfolioState.from_api(await data_api.fetch_positions(settings.trader_wallet))
-
     asset_id = event.get("asset_id")
     if not asset_id:
         return
-    target_pos = target_state.positions.get(asset_id)
-    if not target_pos:
+    raw_size = event.get("size")
+    if raw_size is None:
         return
+    try:
+        size = float(raw_size)
+    except (TypeError, ValueError):
+        return
+
+    signed_size = _signed_size_from_event(event, size)
+    if signed_size is None:
+        return
+
+    market = event.get("market") or ""
+    outcome = event.get("outcome") or ""
+    price_val = event.get("price")
+    try:
+        price = float(price_val) if price_val is not None else None
+    except (TypeError, ValueError):
+        price = None
+
+    target_pos, current_pos, portfolio_notional = await position_tracker.update_target_from_trade(
+        asset_id=asset_id,
+        outcome=outcome,
+        market=market,
+        size=signed_size,
+        price=price,
+    )
+
     desired = target_pos.size * settings.copy_factor
-    current = our_state.positions.get(asset_id)
-    delta = desired - (current.size if current else 0.0)
+    current_size = current_pos.size if current_pos else 0.0
+    delta = desired - current_size
     if abs(delta) < risk_limits.min_trade_size:
         return
 
-    price = float(event.get("price") or target_pos.average_price or 1.0)
-    notional = abs(delta) * price
+    price_used = price if price is not None else (target_pos.average_price or 1.0)
+    notional = abs(delta) * price_used
     market_id = target_pos.market if target_pos.market else target_pos.outcome
     await executor.place_order(
         asset_id=asset_id,
@@ -83,11 +119,18 @@ async def process_event(
         outcome=target_pos.outcome,
         side="buy" if delta > 0 else "sell",
         size=abs(delta),
-        limit_price=price,
+        limit_price=price_used,
         intent_key=f"{event.get('tx_hash')}-{asset_id}",
         target_tx=event.get("tx_hash") or "unknown",
         current_market_exposure=notional,
-        current_portfolio_exposure=our_state.notional(),
+        current_portfolio_exposure=portfolio_notional,
+    )
+    await position_tracker.apply_our_execution(
+        asset_id=asset_id,
+        outcome=target_pos.outcome,
+        market=market_id,
+        size=delta,
+        price=price_used,
     )
 
 
@@ -99,6 +142,7 @@ async def consume_events(
     risk_limits: RiskLimits,
     stop_event: asyncio.Event,
     kill_switch_threshold: int,
+    position_tracker: PositionTracker,
 ) -> None:
     failures = 0
     while not stop_event.is_set():
@@ -113,6 +157,7 @@ async def consume_events(
                 data_api=data_api,
                 executor=executor,
                 risk_limits=risk_limits,
+                position_tracker=position_tracker,
             )
             failures = 0
         except Exception as exc:  # noqa: BLE001
@@ -174,6 +219,11 @@ async def main_async(argv: list[str] | None = None) -> None:
         dry_run=settings.dry_run,
         paper=settings.paper_mode,
     )
+    position_tracker = PositionTracker()
+    await position_tracker.refresh(
+        target_positions=await data_api.fetch_positions(settings.target_wallet),
+        our_positions=await data_api.fetch_positions(settings.trader_wallet),
+    )
 
     stop_event = asyncio.Event()
     watchlist: set[str] = set()
@@ -208,6 +258,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 risk_limits=risk_limits,
                 stop_event=stop_event,
                 kill_switch_threshold=settings.kill_switch_threshold,
+                position_tracker=position_tracker,
             ),
             name="consumer",
         ),
@@ -231,6 +282,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 risk_limits=risk_limits,
                 interval=settings.reconcile_interval,
                 stop_event=stop_event,
+                position_tracker=position_tracker,
             ),
             name="reconcile",
         ),

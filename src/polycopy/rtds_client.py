@@ -73,6 +73,8 @@ class RtdsClient:
             "outcome": payload.get("outcome"),
             "size": payload.get("size"),
             "price": payload.get("price"),
+            "is_buy": payload.get("is_buy") if "is_buy" in payload else payload.get("isBuy"),
+            "side": payload.get("side"),
             "timestamp": payload.get("timestamp"),
         }
         try:
