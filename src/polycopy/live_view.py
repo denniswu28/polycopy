@@ -21,7 +21,7 @@ def _format_ts(value: object | None) -> str:
         return ""
     if ts is None:
         return ""
-    return dt.datetime.utcfromtimestamp(ts).strftime("%H:%M:%S")
+    return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).strftime("%H:%M:%S")
 
 
 def _render_positions(positions: Iterable[Mapping[str, object]]) -> str:
@@ -87,7 +87,7 @@ async def _render_loop(
             trades = await client.fetch_trades(target_wallet, limit=limit)
             positions = await client.fetch_positions(target_wallet)
             _clear_terminal()
-            now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            now = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             print(f"Polycopy live view for {target_wallet} @ {now} UTC\n")
             print(_render_positions(positions))
             print()

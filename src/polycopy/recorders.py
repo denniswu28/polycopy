@@ -103,7 +103,7 @@ class TargetCsvRecorder:
         if not key:
             return
         side = (get_first(event, ["side"], "") or "")
-        side = side.lower() if side else side
+        side = side.lower()
         if not side:
             if event.get("is_buy") is not None:
                 side = "buy" if bool(event.get("is_buy")) else "sell"
