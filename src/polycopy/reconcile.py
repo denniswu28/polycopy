@@ -7,7 +7,7 @@ from typing import Dict
 from .clob_exec import ExecutionEngine
 from .data_api import DataAPIClient
 from .risk import RiskLimits
-from .state import PortfolioState
+from .state import PortfolioState, PositionTracker
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,13 @@ async def reconcile_once(
     our_wallet: str,
     copy_factor: float,
     risk_limits: RiskLimits,
+    position_tracker: PositionTracker | None = None,
 ) -> None:
     target_positions = PortfolioState.from_api(await data_api.fetch_positions(target_wallet))
     our_positions = PortfolioState.from_api(await data_api.fetch_positions(our_wallet))
+
+    if position_tracker:
+        await position_tracker.replace(target_state=target_positions, our_state=our_positions)
 
     scaled_target_positions: Dict[str, float] = {
         asset_id: pos.size * copy_factor for asset_id, pos in target_positions.positions.items()
@@ -67,6 +71,7 @@ async def reconcile_loop(
     risk_limits: RiskLimits,
     interval: float = 30.0,
     stop_event: asyncio.Event,
+    position_tracker: PositionTracker | None = None,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -77,6 +82,7 @@ async def reconcile_loop(
                 our_wallet=our_wallet,
                 copy_factor=copy_factor,
                 risk_limits=risk_limits,
+                position_tracker=position_tracker,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("reconcile iteration failed: %s", exc)

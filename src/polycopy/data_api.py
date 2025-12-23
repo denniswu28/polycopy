@@ -86,6 +86,8 @@ class BackstopPoller:
             "outcome": trade.get("outcome"),
             "size": trade.get("size"),
             "price": trade.get("price"),
+            "is_buy": trade.get("is_buy") if "is_buy" in trade else trade.get("isBuy"),
+            "side": trade.get("side"),
             "timestamp": trade.get("timestamp"),
         }
         try:
