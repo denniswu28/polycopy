@@ -27,6 +27,7 @@ python -m polycopy.main               # start the bot
 python -m polycopy.main --dry-run     # log intended orders only
 python -m polycopy.main --paper       # simulate fills
 python -m polycopy.main --healthcheck # run startup checks then exit
+python -m polycopy.live_view --target-wallet <addr> --api-key <key>  # live terminal view of target trades/positions
 ```
 
 ### Make targets
@@ -69,3 +70,5 @@ See `.env.example` for required keys. Notable settings:
 - **Healthcheck fails**: verify `.env` values and network egress to `data-api.polymarket.com`.
 - **Queue full warnings**: increase `QUEUE_MAXSIZE` or reduce poll interval.
 - **Kill switch triggered**: inspect logs for upstream errors, fix, then restart manually.
+
+In dry-run or paper modes the bot also writes the target wallet's trades and positions to CSV files (`target_trades.csv`, `target_positions.csv`) alongside the SQLite state file for easy offline review and deduplicated logging.

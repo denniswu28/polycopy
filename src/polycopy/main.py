@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from pathlib import Path
 from typing import Any, Dict
 import json
 try:
@@ -15,6 +16,7 @@ from .config import Settings, load_settings
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
 from .reconcile import reconcile_loop
+from .recorders import TargetCsvRecorder
 from .risk import RiskLimits
 from .rtds_client import RtdsClient
 from .state import IntentStore, PositionTracker, PortfolioState
@@ -23,6 +25,8 @@ from .util import logging as log_util
 from .util.time import check_clock_skew
 
 logger = logging.getLogger(__name__)
+# Limit initial trade CSV backfill to a manageable batch to avoid large downloads on startup.
+INITIAL_TRADE_LOG_LIMIT = 200
 
 
 def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
@@ -72,6 +76,7 @@ async def process_event(
     executor: ExecutionEngine,
     risk_limits: RiskLimits,
     position_tracker: PositionTracker,
+    recorder: TargetCsvRecorder | None = None,
 ) -> None:
     asset_id = event.get("asset_id")
     if not asset_id:
@@ -88,6 +93,9 @@ async def process_event(
     if signed_size is None:
         return
 
+    if recorder:
+        await recorder.record_trade(event)
+
     market = event.get("market") or ""
     outcome = event.get("outcome") or ""
     price_val = event.get("price")
@@ -103,6 +111,8 @@ async def process_event(
         size=signed_size,
         price=price,
     )
+    if recorder:
+        await recorder.record_position(target_pos)
 
     desired = target_pos.size * settings.copy_factor
     current_size = current_pos.size if current_pos else 0.0
@@ -143,6 +153,7 @@ async def consume_events(
     stop_event: asyncio.Event,
     kill_switch_threshold: int,
     position_tracker: PositionTracker,
+    recorder: TargetCsvRecorder | None = None,
 ) -> None:
     failures = 0
     while not stop_event.is_set():
@@ -158,6 +169,7 @@ async def consume_events(
                 executor=executor,
                 risk_limits=risk_limits,
                 position_tracker=position_tracker,
+                recorder=recorder,
             )
             failures = 0
         except Exception as exc:  # noqa: BLE001
@@ -219,11 +231,25 @@ async def main_async(argv: list[str] | None = None) -> None:
         dry_run=settings.dry_run,
         paper=settings.paper_mode,
     )
+    recorder: TargetCsvRecorder | None = None
+    if settings.dry_run or settings.paper_mode:
+        base_dir = Path(settings.db_path).resolve().parent
+        recorder = TargetCsvRecorder(
+            trades_path=base_dir / "target_trades.csv",
+            positions_path=base_dir / "target_positions.csv",
+        )
     position_tracker = PositionTracker()
-    await position_tracker.refresh(
-        target_positions=await data_api.fetch_positions(settings.target_wallet),
-        our_positions=await data_api.fetch_positions(settings.trader_wallet),
-    )
+    target_positions = await data_api.fetch_positions(settings.target_wallet)
+    our_positions = await data_api.fetch_positions(settings.trader_wallet)
+    await position_tracker.refresh(target_positions=target_positions, our_positions=our_positions)
+    if recorder:
+        await recorder.record_positions(target_positions)
+        try:
+            await recorder.record_trades(
+                await data_api.fetch_trades(settings.target_wallet, limit=INITIAL_TRADE_LOG_LIMIT)
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("initial trade recording failed", exc_info=True)
 
     stop_event = asyncio.Event()
     watchlist: set[str] = set()
@@ -259,6 +285,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 stop_event=stop_event,
                 kill_switch_threshold=settings.kill_switch_threshold,
                 position_tracker=position_tracker,
+                recorder=recorder,
             ),
             name="consumer",
         ),
