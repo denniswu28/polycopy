@@ -129,7 +129,10 @@ async def _render_loop(*, shm_name: str, refresh: float) -> None:
     try:
         reader = LiveViewReader(name=shm_name)
     except FileNotFoundError as exc:  # pragma: no cover - runtime path
-        raise SystemExit(f"Shared memory segment '{shm_name}' not found. Start the bot in dry-run or paper mode first.") from exc
+        raise SystemExit(
+            f"Shared memory segment '{shm_name}' not found. Start python -m polycopy.main with --dry-run/--paper "
+            f"and matching --shm-name (default: {DEFAULT_SHM_NAME})."
+        ) from exc
     while True:
         snapshot = reader.read()
         _clear_terminal()

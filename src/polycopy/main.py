@@ -43,6 +43,10 @@ def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
     return None
 
 
+def _side_from_size(value: float) -> str:
+    return "buy" if value > 0 else "sell"
+
+
 async def live_view_update_positions(writer: LiveViewWriter, tracker: PositionTracker) -> None:
     target_state, our_state = await tracker.snapshot()
     writer.update_positions(target=target_state, ours=our_state)
@@ -110,7 +114,7 @@ async def process_event(
         price = float(price_val) if price_val is not None else None
     except (TypeError, ValueError):
         price = None
-    side = "buy" if signed_size > 0 else "sell"
+    side = _side_from_size(signed_size)
 
     target_pos, current_pos, portfolio_notional = await position_tracker.update_target_from_trade(
         asset_id=asset_id,
@@ -144,11 +148,12 @@ async def process_event(
     price_used = price if price is not None else (target_pos.average_price or 1.0)
     notional = abs(delta) * price_used
     market_id = target_pos.market if target_pos.market else target_pos.outcome
+    order_side = _side_from_size(delta)
     await executor.place_order(
         asset_id=asset_id,
         market_id=market_id,
         outcome=target_pos.outcome,
-        side="buy" if delta > 0 else "sell",
+        side=order_side,
         size=abs(delta),
         limit_price=price_used,
         intent_key=f"{event.get('tx_hash')}-{asset_id}",
@@ -168,7 +173,7 @@ async def process_event(
             asset_id=asset_id,
             market=market_id,
             outcome=target_pos.outcome,
-            side="buy" if delta > 0 else "sell",
+            side=order_side,
             size=abs(delta),
             price=price_used,
         )

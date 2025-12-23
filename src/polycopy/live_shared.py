@@ -193,6 +193,10 @@ class LiveViewWriter:
         self._flush()
 
     def record_order(self, *, asset_id: str, market: str, outcome: str, side: str, size: float, price: float) -> None:
+        try:
+            price_val = float(price)
+        except (TypeError, ValueError):
+            price_val = 0.0
         order = {
             "kind": "order",
             "asset_id": asset_id,
@@ -200,10 +204,11 @@ class LiveViewWriter:
             "outcome": outcome,
             "side": side,
             "size": size,
-            "price": price,
+            "price": price_val,
             "timestamp": time.time(),
         }
-        self._prices[asset_id] = price
+        if price_val:
+            self._prices[asset_id] = price_val
         self._orders.appendleft(order)
         self._flush()
 
