@@ -38,3 +38,4 @@ def setup_logging() -> None:
     root.setLevel(level)
     root.handlers.clear()
     root.addHandler(handler)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
