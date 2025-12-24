@@ -15,7 +15,8 @@ dependencies = [
   "uvloop>=0.20.0; sys_platform != 'win32'",
   "python-dotenv>=1.0.0",
   "click>=8.1.7",
-  "py-clob-client>=0.33.0"
+  "py-clob-client>=0.33.0",
+  "rich"
 ]
 
 [tool.pytest.ini_options]
