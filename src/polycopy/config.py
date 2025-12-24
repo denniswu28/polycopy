@@ -47,8 +47,10 @@ class Settings(BaseSettings):
     max_notional_per_trade: float = 250.0
     max_notional_per_market: float = 1000.0
     max_portfolio_exposure: float = 5000.0
-    min_trade_size: float = 10.0
-    min_market_order_notional: float = 1.0
+    min_trade_size: float = Field(10.0, description="Minimum limit order size used for copy trades")
+    min_market_order_notional: float = Field(1.0, description="Minimum notional required when placing market orders")
+    buy_limit_price: float = 1.0
+    sell_limit_price: float = 0.0
     slippage_bps: int = 50
     blacklist_markets: List[str] = Field(default_factory=list)
     blacklist_outcomes: List[str] = Field(default_factory=list)

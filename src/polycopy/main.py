@@ -6,6 +6,7 @@ import signal
 from pathlib import Path
 from typing import Any, Dict
 import json
+import httpx
 try:
     import uvloop
 except ImportError:  # pragma: no cover
@@ -28,6 +29,7 @@ from .state import IntentStore, PositionTracker, PortfolioState
 from .util import get_first
 from .util import logging as log_util
 from .util.time import check_clock_skew
+from py_clob_client.exceptions import PolyException
 
 logger = logging.getLogger(__name__)
 # Limit initial trade CSV backfill to a manageable batch to avoid large downloads on startup.
@@ -256,7 +258,7 @@ async def process_event(
     # Use mid price for valuation if available; otherwise fall back to
     # the actual limit price we intend to use.
     exposure_price = mid_price if mid_price is not None else valuation_price
-    limit_price = 1.0 if order_side == "buy" else 0.0
+    limit_price = settings.buy_limit_price if order_side == "buy" else settings.sell_limit_price
 
     # Recompute portfolio notional using mid prices across our book.
     _, our_state = await position_tracker.snapshot()
@@ -273,7 +275,10 @@ async def process_event(
 
     portfolio_notional = our_state.notional(prices=mid_prices)
 
-    notional = abs(delta) * (exposure_price if exposure_price is not None else 1.0)
+    pricing_for_exposure = exposure_price if exposure_price is not None else 1.0
+    if exposure_price is None:
+        logger.warning("Exposure price missing for %s; using fallback %s", asset_id, pricing_for_exposure)
+    notional = abs(delta) * pricing_for_exposure
     market_id = target_pos.market if target_pos.market else target_pos.outcome
     await executor.place_order(
         asset_id=asset_id,
@@ -302,7 +307,7 @@ async def process_event(
             outcome=target_pos.outcome,
             side=order_side,
             size=abs(delta),
-            price=price_used,
+            price=limit_price,
         )
         await live_view_update_positions(live_view, position_tracker)
 
@@ -327,6 +332,7 @@ async def consume_events(
         except asyncio.TimeoutError:
             continue
         try:
+            # Coalesce backlog items in the consumer; this loop is single-consumer so we have a consistent snapshot.
             event = await _coalesce_events(event, queue)
             await process_event(
                 event=event,
@@ -400,7 +406,7 @@ async def monitor_closed_markets(
         }
         try:
             statuses = await market_status_checker.refresh_markets(set(markets))
-        except Exception as exc:  # noqa: BLE001
+        except (PolyException, httpx.HTTPError, ValueError) as exc:
             logger.debug("market status refresh failed: %s", exc)
             statuses = {}
         closed_markets = {mid for mid, active in statuses.items() if not active}

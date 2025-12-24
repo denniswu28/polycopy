@@ -5,8 +5,10 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Set
+import httpx
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import BookParams
+from py_clob_client.exceptions import PolyException
 
 from .data_api import DataAPIClient
 from .state import PortfolioState
@@ -170,13 +172,14 @@ class OrderBookManager:
                 BookParams(token_id=asset_id, side="SELL"),
             ]
             resp = await asyncio.to_thread(self._clob_client.get_prices, params)
-        except Exception as exc:  # noqa: BLE001
+        except (PolyException, httpx.HTTPError, ValueError, TypeError) as exc:
             logger.debug("clob get_prices failed for %s: %s", asset_id, exc)
             return None
 
         if not isinstance(resp, dict):
             return None
         entry = resp.get(asset_id, {})
+        # get_prices returns taker quotes: BUY maps to best ask, SELL maps to best bid.
         best_ask_raw = entry.get("BUY") if isinstance(entry, dict) else None
         best_bid_raw = entry.get("SELL") if isinstance(entry, dict) else None
         try:
@@ -213,7 +216,7 @@ class OrderBookManager:
             params.append(BookParams(token_id=token, side="SELL"))
         try:
             resp = await asyncio.to_thread(self._clob_client.get_prices, params)
-        except Exception as exc:  # noqa: BLE001
+        except (PolyException, httpx.HTTPError, ValueError, TypeError) as exc:
             logger.debug("bulk get_prices failed for %d assets: %s", len(tokens), exc)
             return
         if not isinstance(resp, dict):
@@ -222,6 +225,7 @@ class OrderBookManager:
         async with self._lock:
             for token in tokens:
                 entry = resp.get(token, {}) if isinstance(resp, dict) else {}
+                # BUY corresponds to the best ask price, SELL corresponds to the best bid.
                 best_ask_raw = entry.get("BUY") if isinstance(entry, dict) else None
                 best_bid_raw = entry.get("SELL") if isinstance(entry, dict) else None
                 try:
@@ -343,7 +347,11 @@ class OrderBookManager:
                     self._subscriptions.add(aid)
 
     async def close(self) -> None:
-        return
+        close_fn = getattr(self._clob_client, "close", None)
+        if callable(close_fn):
+            await asyncio.to_thread(close_fn)
+        else:
+            logger.debug("ClobClient provides no close() hook; nothing to clean up")
 
     async def fetch_price(self, asset_id: str, side: str) -> Optional[float]:
         """Fetch price using CLOB get_prices."""

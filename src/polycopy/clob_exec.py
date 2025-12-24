@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import json
 import httpx
 from py_clob_client.client import ClobClient
+from py_clob_client.exceptions import PolyException
 
 from .risk import RiskLimits, RiskError, validate_trade
 from .state import IntentStore
@@ -36,7 +37,7 @@ class MarketStatusChecker:
         while remaining and next_cursor:
             try:
                 resp = self._client.get_markets(next_cursor=next_cursor)
-            except Exception as exc:  # noqa: BLE001
+            except (PolyException, httpx.HTTPError, ValueError) as exc:
                 logger.debug("get_markets failed: %s", exc)
                 break
             data = resp.get("data") if isinstance(resp, dict) else resp
@@ -65,7 +66,7 @@ class MarketStatusChecker:
                 item = self._client.get_market(mid)
                 results[mid] = item
                 remaining.discard(mid)
-            except Exception as exc:  # noqa: BLE001
+            except (PolyException, httpx.HTTPError, ValueError) as exc:
                 logger.debug("get_market failed for %s: %s", mid, exc)
         return results
 
@@ -76,7 +77,7 @@ class MarketStatusChecker:
             return cached[0]
         try:
             markets = await asyncio.to_thread(self._get_multiple_markets, {market_id})
-        except Exception as exc:  # noqa: BLE001
+        except (PolyException, httpx.HTTPError, ValueError) as exc:
             logger.debug("market status fetch failed for %s: %s", market_id, exc)
             return True
         data = markets.get(market_id)
@@ -99,7 +100,7 @@ class MarketStatusChecker:
             return {}
         try:
             results = await asyncio.to_thread(self._get_multiple_markets, markets)
-        except Exception as exc:  # noqa: BLE001
+        except (PolyException, httpx.HTTPError, ValueError) as exc:
             logger.debug("bulk market status fetch failed: %s", exc)
             return {}
         now = time.time()
@@ -179,11 +180,14 @@ class ExecutionEngine:
         current_market_exposure: float,
         current_portfolio_exposure: float,
     ) -> Optional[Dict[str, Any]]:
-        pricing_price = (
-            valuation_price
-            if valuation_price is not None
-            else (limit_price if limit_price > 0 else 1.0)
-        )
+        pricing_price = valuation_price if valuation_price is not None else (limit_price if limit_price > 0 else None)
+        if pricing_price is None or pricing_price <= 0:
+            logger.warning(
+                "Using fallback valuation price for asset %s (limit_price=%s); defaulting to 1.0",
+                asset_id,
+                limit_price,
+            )
+            pricing_price = 1.0
         notional = abs(size) * pricing_price
         resulting_market_notional = current_market_exposure + notional
         resulting_portfolio = current_portfolio_exposure + notional

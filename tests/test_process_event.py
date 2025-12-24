@@ -110,13 +110,14 @@ async def test_process_event_handles_sell_reversal():
 @pytest.mark.asyncio
 async def test_coalesce_events_merges_same_side_market():
     queue: asyncio.Queue = asyncio.Queue()
-    base = {"asset_id": "asset1", "market": "m1", "size": 2.0, "is_buy": True, "tx_hash": "tx1"}
+    base = {"asset_id": "asset1", "market": "m1", "size": 2.0, "is_buy": True, "side": "buy", "tx_hash": "tx1"}
     await queue.put({"asset_id": "asset1", "market": "m1", "size": 3.0, "is_buy": True, "tx_hash": "tx2"})
     await queue.put({"asset_id": "asset1", "market": "m1", "size": 1.0, "is_buy": False, "tx_hash": "tx3"})
 
     merged = await _coalesce_events(base, queue)
     assert merged["size"] == pytest.approx(5.0)
     assert merged["side"] == "buy"
+    assert merged["is_buy"] is True
     assert "tx1" in merged["tx_hash"]
     assert "tx2" in merged["tx_hash"]
     # The opposite-side trade should be re-queued
