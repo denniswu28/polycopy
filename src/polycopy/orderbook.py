@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional, Set
 
+import httpx
+
 from .data_api import DataAPIClient
 from .state import PortfolioState
 
@@ -30,12 +32,18 @@ class OrderBookManager:
         self,
         data_api: DataAPIClient,
         max_staleness_s: float = 60.0,
+        clob_rest_url: str = "https://clob.polymarket.com",
     ) -> None:
         self.data_api = data_api
         self.max_staleness_s = max_staleness_s
         self._quotes: Dict[str, BestQuote] = {}
         self._subscriptions: Set[str] = set()
         self._lock = asyncio.Lock()
+        self._rest_client = httpx.AsyncClient(
+            base_url=clob_rest_url,
+            timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
+        )
+        self._rest_fetch_ts: Dict[str, float] = {}
 
     async def update_from_ws(self, message: Dict) -> None:
         """Process WS message to update quotes."""
@@ -58,10 +66,10 @@ class OrderBookManager:
 
         bids = message.get("bids", [])
         asks = message.get("asks", [])
-        
+
         best_bid = float(bids[0]["price"]) if bids else None
         best_ask = float(asks[0]["price"]) if asks else None
-        
+
         try:
             ts = int(message.get("timestamp", 0))
         except (ValueError, TypeError):
@@ -75,6 +83,7 @@ class OrderBookManager:
             last_update_ms=ts,
             last_source="book",
         )
+        logger.debug("updated book quote for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
 
     def _handle_price_change(self, message: Dict) -> None:
         changes = message.get("price_changes", [])
@@ -87,11 +96,11 @@ class OrderBookManager:
             asset_id = change.get("asset_id")
             if not asset_id:
                 continue
-            
+
             # price_change event includes best_bid/best_ask snapshot
             best_bid_raw = change.get("best_bid")
             best_ask_raw = change.get("best_ask")
-            
+
             best_bid = float(best_bid_raw) if best_bid_raw else None
             best_ask = float(best_ask_raw) if best_ask_raw else None
 
@@ -111,6 +120,7 @@ class OrderBookManager:
                     last_update_ms=ts,
                     last_source="price_change",
                 )
+            logger.debug("price_change for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
 
     def _handle_tick_size_change(self, message: Dict) -> None:
         asset_id = message.get("asset_id")
@@ -121,6 +131,52 @@ class OrderBookManager:
             except (ValueError, TypeError):
                 pass
 
+    async def _refresh_from_rest(self, asset_id: str) -> Optional[BestQuote]:
+        now = time.time()
+        last_fetch = self._rest_fetch_ts.get(asset_id, 0)
+        if now - last_fetch < 1.0:
+            async with self._lock:
+                return self._quotes.get(asset_id)
+
+        try:
+            resp = await self._rest_client.get("/book", params={"token_id": asset_id})
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
+            async with self._lock:
+                return self._quotes.get(asset_id)
+
+        bids = data.get("bids") or []
+        asks = data.get("asks") or []
+        best_bid = float(bids[0]["price"]) if bids else None
+        best_ask = float(asks[0]["price"]) if asks else None
+        tick_size = None
+        try:
+            tick_size_raw = data.get("tick_size")
+            tick_size = float(tick_size_raw) if tick_size_raw is not None else None
+        except (TypeError, ValueError):
+            tick_size = None
+        ts = int(time.time() * 1000)
+        quote = BestQuote(
+            asset_id=asset_id,
+            market=data.get("market", ""),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_update_ms=ts,
+            last_source="rest_book",
+            tick_size=tick_size,
+        )
+        async with self._lock:
+            self._quotes[asset_id] = quote
+            self._rest_fetch_ts[asset_id] = now
+        logger.info("fetched rest orderbook for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
+        return quote
+
+    def _is_stale(self, quote: BestQuote) -> bool:
+        now_ms = int(time.time() * 1000)
+        return (now_ms - quote.last_update_ms) > (self.max_staleness_s * 1000)
+
     async def get_best_quote(self, asset_id: str, side: str) -> float | None:
         """
         Get the best price for placing an order.
@@ -129,31 +185,23 @@ class OrderBookManager:
         """
         async with self._lock:
             quote = self._quotes.get(asset_id)
-            if not quote:
-                return None
+            stale = quote is None or self._is_stale(quote)
+        if stale:
+            quote = await self._refresh_from_rest(asset_id)
+        if not quote or self._is_stale(quote):
+            logger.debug("no usable quote for %s side=%s", asset_id, side)
+            return None
 
-            # Staleness check
-            now_ms = int(time.time() * 1000)
-            if (now_ms - quote.last_update_ms) > (self.max_staleness_s * 1000):
-                return None
+        price = quote.best_ask if side.lower() == "buy" else quote.best_bid
 
-            price = None
-            if side.lower() == "buy":
-                price = quote.best_ask
-            else:
-                price = quote.best_bid
+        if price is None:
+            return None
 
-            if price is None:
-                return None
+        # Optional: Snap to tick size if known
+        if quote.tick_size:
+            price = round(price / quote.tick_size) * quote.tick_size
 
-            # Optional: Snap to tick size if known
-            if quote.tick_size:
-                # Round to nearest tick
-                # For BUY (ask), maybe round UP to be safe? For SELL (bid), round DOWN?
-                # Simple rounding for now
-                price = round(price / quote.tick_size) * quote.tick_size
-
-            return price
+        return price
 
     async def get_mid_price(self, asset_id: str) -> float | None:
         """Return a mid price for valuation where possible.
@@ -166,40 +214,39 @@ class OrderBookManager:
         """
         async with self._lock:
             quote = self._quotes.get(asset_id)
-            if not quote:
-                return None
+            stale = quote is None or self._is_stale(quote)
+        if stale:
+            quote = await self._refresh_from_rest(asset_id)
+        if not quote or self._is_stale(quote):
+            logger.debug("no usable mid price for %s", asset_id)
+            return None
 
-            now_ms = int(time.time() * 1000)
-            if (now_ms - quote.last_update_ms) > (self.max_staleness_s * 1000):
-                # Quote too old for valuation
-                return None
+        bid = quote.best_bid
+        ask = quote.best_ask
 
-            bid = quote.best_bid
-            ask = quote.best_ask
+        if bid is None and ask is None:
+            return None
 
-            if bid is None and ask is None:
-                return None
-
-            if bid is not None and ask is not None:
-                spread = ask - bid
-                if spread <= 0:
-                    mid = (bid + ask) / 2.0
-                else:
-                    max_side = max(abs(bid), abs(ask), 1e-9)
-                    spread_pct = spread / max_side
-                    # Polymarket prices live in [0,1]; treat spreads wider than
-                    # 0.5 absolute or 50% relative as too thin to trust.
-                    if spread > 0.5 or spread_pct > 0.5:
-                        return None
-                    mid = (bid + ask) / 2.0
+        if bid is not None and ask is not None:
+            spread = ask - bid
+            if spread <= 0:
+                mid = (bid + ask) / 2.0
             else:
-                # Only one side available; still better than nothing.
-                mid = bid if bid is not None else ask
+                max_side = max(abs(bid), abs(ask), 1e-9)
+                spread_pct = spread / max_side
+                # Polymarket prices live in [0,1]; treat spreads wider than
+                # 0.5 absolute or 50% relative as too thin to trust.
+                if spread > 0.5 or spread_pct > 0.5:
+                    return None
+                mid = (bid + ask) / 2.0
+        else:
+            # Only one side available; still better than nothing.
+            mid = bid if bid is not None else ask
 
-            if quote.tick_size:
-                mid = round(mid / quote.tick_size) * quote.tick_size
+        if quote.tick_size:
+            mid = round(mid / quote.tick_size) * quote.tick_size
 
-            return mid
+        return mid
 
     async def ensure_subscribed(self, asset_id: str) -> bool:
         """Mark asset as needing subscription. Returns True if newly added."""
@@ -222,3 +269,6 @@ class OrderBookManager:
             for aid, pos in ours.positions.items():
                 if abs(pos.size) > 0:
                     self._subscriptions.add(aid)
+
+    async def close(self) -> None:
+        await self._rest_client.aclose()

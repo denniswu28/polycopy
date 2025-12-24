@@ -98,37 +98,19 @@ class MarketBookClient:
                 
                 if new_subs:
                     # Subscribe to new assets
-                    # Payload: {"assets_ids": [...], "type": "market"}
-                    # Or dynamic: {"assets_ids": [...], "operation": "subscribe"}
-                    # The docs say initial sub is type="market", dynamic is operation="subscribe"
-                    # But let's try the dynamic format if we are already connected?
-                    # Actually, the docs say:
-                    # "To subscribe/unsubscribe to assets after connection: { assets_ids: [...], operation: 'subscribe' }"
-                    
                     # We'll batch them in chunks of 50 just in case
                     new_subs_list = list(new_subs)
                     chunk_size = 50
                     for i in range(0, len(new_subs_list), chunk_size):
                         chunk = new_subs_list[i : i + chunk_size]
-                        payload = {
-                            "assets_ids": chunk,
-                            "type": "market", # Using type=market seems safer for initial connect, but let's try operation if this is a loop
-                        }
-                        # If this is the FIRST time, maybe we used type=market. 
-                        # But since we are inside the loop, let's use the dynamic format if we can.
-                        # However, the docs show "type": "market" for initial.
-                        # Let's stick to the dynamic format for updates.
-                        
-                        # Wait, if we just connected, last_subs is empty, so we send everything.
-                        # If we send everything at once, maybe we should use type="market"?
-                        # Let's try the standard subscription message first.
-                        
-                        msg = {
-                            "assets_ids": chunk,
-                            "type": "market"
-                        }
+                        # Initial connection expects type="market"; follow-up additions
+                        # use the documented dynamic subscribe format.
+                        if not last_subs:
+                            msg = {"assets_ids": chunk, "type": "market"}
+                        else:
+                            msg = {"assets_ids": chunk, "operation": "subscribe"}
                         await self._ws.send(json.dumps(msg))
-                        logger.info("Subscribed to market data for %d assets", len(chunk))
+                        logger.info("Subscribed to market data for %d assets via %s", len(chunk), msg.get("operation", msg.get("type")))
                     
                     last_subs = current_subs
 

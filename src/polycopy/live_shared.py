@@ -249,6 +249,13 @@ class LiveViewWriter:
                 "orders": list(self._orders),
             },
         }
+        logger.debug(
+            "live view flush positions target=%s ours=%s trades=%s orders=%s",
+            len(self._target_positions),
+            len(self._our_positions),
+            len(self._target_trades),
+            len(self._orders),
+        )
         self._buffer.write(payload)
 
 

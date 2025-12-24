@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict
+import time
+from typing import Any, Dict, Optional
 import json
 import httpx
 
@@ -10,6 +11,42 @@ from .risk import RiskLimits, RiskError, validate_trade
 from .state import IntentStore
 
 logger = logging.getLogger(__name__)
+
+
+class MarketStatusChecker:
+    """Cache market active/closed state using the CLOB REST API."""
+
+    def __init__(self, rest_url: str, ttl_seconds: float = 60.0) -> None:
+        self._client = httpx.AsyncClient(
+            base_url=rest_url.rstrip("/"),
+            timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
+        )
+        self._cache: Dict[str, tuple[bool, float]] = {}
+        self._ttl = ttl_seconds
+
+    async def is_active(self, market_id: str) -> bool:
+        now = time.time()
+        cached = self._cache.get(market_id)
+        if cached and (now - cached[1]) < self._ttl:
+            return cached[0]
+        try:
+            resp = await self._client.get(f"/markets/{market_id}")
+            resp.raise_for_status()
+            data = resp.json()
+            active = bool(data.get("active", True))
+            if "closed" in data:
+                active = not bool(data.get("closed"))
+            self._cache[market_id] = (active, now)
+            logger.debug("market status for %s active=%s", market_id, active)
+            return active
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("market status check failed for %s: %s", market_id, exc)
+            return True
+
+    async def close(self) -> None:
+        await self._client.aclose()
+        if self.market_status_checker:
+            await self.market_status_checker.close()
 
 
 class ExecutionEngine:
@@ -27,6 +64,7 @@ class ExecutionEngine:
         wallet_address: str,
         dry_run: bool = False,
         paper: bool = False,
+        market_status_checker: MarketStatusChecker | None = None,
     ) -> None:
         self.rest_url = rest_url.rstrip("/")
         self.intent_store = intent_store
@@ -43,6 +81,7 @@ class ExecutionEngine:
         )
         self.private_key = private_key
         self.wallet_address = wallet_address
+        self.market_status_checker = market_status_checker
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -82,6 +121,12 @@ class ExecutionEngine:
         if not fresh:
             logger.info("intent already processed, skipping %s", intent_key)
             return None
+
+        if self.market_status_checker:
+            active = await self.market_status_checker.is_active(market_id)
+            if not active:
+                logger.warning("Market %s inactive/closed; skipping order %s", market_id, intent_key)
+                return None
 
         order = {
             "asset_id": asset_id,

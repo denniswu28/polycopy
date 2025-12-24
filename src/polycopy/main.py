@@ -11,7 +11,7 @@ try:
 except ImportError:  # pragma: no cover
     uvloop = None
 
-from .clob_exec import ExecutionEngine
+from .clob_exec import ExecutionEngine, MarketStatusChecker
 from .config import Settings, load_settings
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
@@ -92,7 +92,7 @@ async def process_event(
     executor: ExecutionEngine,
     risk_limits: RiskLimits,
     position_tracker: PositionTracker,
-    orderbook_manager: OrderBookManager,
+    orderbook_manager: OrderBookManager | None = None,
     recorder: TargetCsvRecorder | None = None,
     live_view: LiveViewWriter | None = None,
 ) -> None:
@@ -100,7 +100,8 @@ async def process_event(
     if not asset_id:
         return
     
-    await orderbook_manager.ensure_subscribed(asset_id)
+    if orderbook_manager:
+        await orderbook_manager.ensure_subscribed(asset_id)
 
     raw_size = event.get("size")
     if raw_size is None:
@@ -156,8 +157,12 @@ async def process_event(
         return
 
     order_side = _side_from_size(delta)
-    quote_price = await orderbook_manager.get_best_quote(asset_id, order_side)
-    mid_price = await orderbook_manager.get_mid_price(asset_id)
+    if orderbook_manager:
+        quote_price = await orderbook_manager.get_best_quote(asset_id, order_side)
+        mid_price = await orderbook_manager.get_mid_price(asset_id)
+    else:
+        quote_price = None
+        mid_price = None
 
     if quote_price is not None:
         price_used = quote_price
@@ -174,10 +179,11 @@ async def process_event(
     # Recompute portfolio notional using mid prices across our book.
     _, our_state = await position_tracker.snapshot()
     mid_prices: Dict[str, float] = {}
-    for aid in our_state.positions.keys():
-        mp = await orderbook_manager.get_mid_price(aid)
-        if mp is not None:
-            mid_prices[aid] = mp
+    if orderbook_manager:
+        for aid in our_state.positions.keys():
+            mp = await orderbook_manager.get_mid_price(aid)
+            if mp is not None:
+                mid_prices[aid] = mp
 
     portfolio_notional = our_state.notional(prices=mid_prices)
 
@@ -299,6 +305,7 @@ async def main_async(argv: list[str] | None = None) -> None:
     data_api = DataAPIClient(settings.data_api_url, settings.api_key)  # type: ignore[arg-type]
     risk_limits = RiskLimits.from_settings(settings)
     intent_store = IntentStore(settings.db_path)
+    market_status_checker = MarketStatusChecker(settings.clob_rest_url)
     executor = ExecutionEngine(
         rest_url=settings.clob_rest_url,
         api_key=settings.api_key,  # type: ignore[arg-type]
@@ -310,6 +317,7 @@ async def main_async(argv: list[str] | None = None) -> None:
         wallet_address=settings.trader_wallet,
         dry_run=settings.dry_run,
         paper=settings.paper_mode,
+        market_status_checker=market_status_checker,
     )
     recorder: TargetCsvRecorder | None = None
     live_view_writer: LiveViewWriter | None = None
@@ -325,7 +333,7 @@ async def main_async(argv: list[str] | None = None) -> None:
     our_positions = await data_api.fetch_positions(settings.trader_wallet)
     await position_tracker.refresh(target_positions=target_positions, our_positions=our_positions)
 
-    orderbook_manager = OrderBookManager(data_api=data_api)
+    orderbook_manager = OrderBookManager(data_api=data_api, clob_rest_url=settings.clob_rest_url)
     market_client = MarketBookClient(
         url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
         orderbook_manager=orderbook_manager,
@@ -428,6 +436,7 @@ async def main_async(argv: list[str] | None = None) -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     await executor.close()
+    await orderbook_manager.close()
     await data_api.close()
     if live_view_writer:
         live_view_writer.close()
