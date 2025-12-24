@@ -96,8 +96,10 @@ class RtdsClient:
                 self._failures += 1
                 logger.warning("WS error (%s), failure %s", exc, self._failures)
                 if self._failures >= self.failure_threshold:
-                    logger.error("WS circuit breaker opened; disabling fast path")
-                    self._disabled = True
+                    logger.error("WS circuit breaker opened; sleeping for %s seconds", self.backoff_seconds * 2)
+                    await asyncio.sleep(self.backoff_seconds * 2)
+                    self._failures = 0  # Reset failures after backoff
+                    # self._disabled = True # Do not permanently disable
                     break
                 await asyncio.sleep(self.backoff_seconds)
 

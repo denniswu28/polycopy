@@ -16,6 +16,8 @@ from .config import Settings, load_settings
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
 from .live_shared import LiveViewWriter
+from .market_client import MarketBookClient
+from .orderbook import OrderBookManager
 from .reconcile import reconcile_loop
 from .recorders import TargetCsvRecorder
 from .risk import RiskLimits
@@ -90,12 +92,16 @@ async def process_event(
     executor: ExecutionEngine,
     risk_limits: RiskLimits,
     position_tracker: PositionTracker,
+    orderbook_manager: OrderBookManager,
     recorder: TargetCsvRecorder | None = None,
     live_view: LiveViewWriter | None = None,
 ) -> None:
     asset_id = event.get("asset_id")
     if not asset_id:
         return
+    
+    await orderbook_manager.ensure_subscribed(asset_id)
+
     raw_size = event.get("size")
     if raw_size is None:
         return
@@ -120,7 +126,7 @@ async def process_event(
         price = None
     side = _side_from_size(signed_size)
 
-    target_pos, current_pos, portfolio_notional = await position_tracker.update_target_from_trade(
+    target_pos, current_pos, _ = await position_tracker.update_target_from_trade(
         asset_id=asset_id,
         outcome=outcome,
         market=market,
@@ -149,10 +155,34 @@ async def process_event(
     if abs(delta) < risk_limits.min_trade_size:
         return
 
-    price_used = price if price is not None else (target_pos.average_price or 1.0)
-    notional = abs(delta) * price_used
-    market_id = target_pos.market if target_pos.market else target_pos.outcome
     order_side = _side_from_size(delta)
+    quote_price = await orderbook_manager.get_best_quote(asset_id, order_side)
+    mid_price = await orderbook_manager.get_mid_price(asset_id)
+
+    if quote_price is not None:
+        price_used = quote_price
+    elif price is not None:
+        price_used = price
+    else:
+        price_used = target_pos.average_price or 1.0
+        logger.warning("Using fallback price %s for %s (side=%s)", price_used, asset_id, order_side)
+
+    # Use mid price for valuation if available; otherwise fall back to
+    # the actual limit price we intend to use.
+    exposure_price = mid_price if mid_price is not None else price_used
+
+    # Recompute portfolio notional using mid prices across our book.
+    _, our_state = await position_tracker.snapshot()
+    mid_prices: Dict[str, float] = {}
+    for aid in our_state.positions.keys():
+        mp = await orderbook_manager.get_mid_price(aid)
+        if mp is not None:
+            mid_prices[aid] = mp
+
+    portfolio_notional = our_state.notional(prices=mid_prices)
+
+    notional = abs(delta) * exposure_price
+    market_id = target_pos.market if target_pos.market else target_pos.outcome
     await executor.place_order(
         asset_id=asset_id,
         market_id=market_id,
@@ -193,6 +223,7 @@ async def consume_events(
     stop_event: asyncio.Event,
     kill_switch_threshold: int,
     position_tracker: PositionTracker,
+    orderbook_manager: OrderBookManager,
     recorder: TargetCsvRecorder | None = None,
     live_view: LiveViewWriter | None = None,
 ) -> None:
@@ -210,6 +241,7 @@ async def consume_events(
                 executor=executor,
                 risk_limits=risk_limits,
                 position_tracker=position_tracker,
+                orderbook_manager=orderbook_manager,
                 recorder=recorder,
                 live_view=live_view,
             )
@@ -222,10 +254,13 @@ async def consume_events(
                 stop_event.set()
         finally:
             queue.task_done()
-
-
 async def refresh_watchlist(
-    data_api: DataAPIClient, target_wallet: str, watchlist: set[str], interval: float, stop_event: asyncio.Event
+    data_api: DataAPIClient,
+    target_wallet: str,
+    watchlist: set[str],
+    interval: float,
+    stop_event: asyncio.Event,
+    orderbook_manager: OrderBookManager,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -233,8 +268,11 @@ async def refresh_watchlist(
             watchlist.clear()
             for pos in positions:
                 market = get_first(pos, ["market", "market_slug", "event_slug", "eventSlug", "slug"])
+                asset_id = pos.get("asset_id")
                 if market:
                     watchlist.add(market)
+                if asset_id:
+                    await orderbook_manager.ensure_subscribed(asset_id)
         except Exception as exc:  # noqa: BLE001
             logger.debug("watchlist refresh failed: %s", exc)
         try:
@@ -281,11 +319,22 @@ async def main_async(argv: list[str] | None = None) -> None:
             trades_path=base_dir / "target_trades.csv",
             positions_path=base_dir / "target_positions.csv",
         )
-        live_view_writer = LiveViewWriter()
+        live_view_writer = LiveViewWriter(copy_factor=settings.copy_factor)
     position_tracker = PositionTracker()
     target_positions = await data_api.fetch_positions(settings.target_wallet)
     our_positions = await data_api.fetch_positions(settings.trader_wallet)
     await position_tracker.refresh(target_positions=target_positions, our_positions=our_positions)
+
+    orderbook_manager = OrderBookManager(data_api=data_api)
+    market_client = MarketBookClient(
+        url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        orderbook_manager=orderbook_manager,
+    )
+    await orderbook_manager.bootstrap_from_portfolios(
+        PortfolioState.from_api(target_positions),
+        PortfolioState.from_api(our_positions),
+    )
+
     initial_trades: list[dict] | None = None
     if recorder:
         await recorder.record_positions(target_positions)
@@ -323,6 +372,7 @@ async def main_async(argv: list[str] | None = None) -> None:
     tasks = [
         asyncio.create_task(rtds.run(), name="rtds"),
         asyncio.create_task(backstop.run(), name="backstop"),
+        asyncio.create_task(market_client.run(), name="market_book"),
         asyncio.create_task(
             consume_events(
                 queue=queue,
@@ -333,6 +383,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 stop_event=stop_event,
                 kill_switch_threshold=settings.kill_switch_threshold,
                 position_tracker=position_tracker,
+                orderbook_manager=orderbook_manager,
                 recorder=recorder,
                 live_view=live_view_writer,
             ),
@@ -345,6 +396,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 watchlist=watchlist,
                 interval=settings.watchlist_refresh_interval,
                 stop_event=stop_event,
+                orderbook_manager=orderbook_manager,
             ),
             name="watchlist",
         ),
@@ -360,6 +412,8 @@ async def main_async(argv: list[str] | None = None) -> None:
                 stop_event=stop_event,
                 position_tracker=position_tracker,
                 live_view=live_view_writer,
+                orderbook_manager=orderbook_manager,
+                dry_run=settings.dry_run or settings.paper_mode,
             ),
             name="reconcile",
         ),

@@ -14,7 +14,7 @@ from .util import get_first
 
 _HEADER = struct.Struct("<II")
 DEFAULT_SHM_NAME = "polycopy_live_view"
-DEFAULT_SHM_SIZE = 1_048_576
+DEFAULT_SHM_SIZE = 4 * 1_048_576  # 4MB
 DEFAULT_FIFO_LIMIT = 200
 _READ_RETRIES = 3
 _READ_SLEEP_SECONDS = 0.001
@@ -98,7 +98,10 @@ class _SharedBuffer:
         self._shm.close()
 
     def unlink(self) -> None:
-        self._shm.unlink()
+        try:
+            self._shm.unlink()
+        except (FileNotFoundError, OSError):
+            pass
 
     def wipe(self) -> None:
         self._shm.buf[: self.size] = b"\x00" * self.size
@@ -146,6 +149,7 @@ class LiveViewWriter:
         name: str = DEFAULT_SHM_NAME,
         size: int = DEFAULT_SHM_SIZE,
         limit: int = DEFAULT_FIFO_LIMIT,
+        copy_factor: float = 1.0,
     ) -> None:
         try:
             self._buffer = _SharedBuffer(name=name, size=size, create=True)
@@ -157,6 +161,7 @@ class LiveViewWriter:
         self._prices: dict[str, float] = {}
         self._target_trades: Deque[dict] = deque(maxlen=limit)
         self._orders: Deque[dict] = deque(maxlen=limit)
+        self._copy_factor = copy_factor
 
     def close(self) -> None:
         self._buffer.close()
@@ -164,7 +169,7 @@ class LiveViewWriter:
     def unlink(self) -> None:
         try:
             self._buffer.unlink()
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             return
 
     def update_positions(
@@ -233,6 +238,7 @@ class LiveViewWriter:
     def _flush(self) -> None:
         payload: dict[str, Any] = {
             "updated_at": time.time(),
+            "copy_factor": self._copy_factor,
             "positions": {
                 "target": self._target_positions,
                 "ours": self._our_positions,

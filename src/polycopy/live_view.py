@@ -5,11 +5,37 @@ import asyncio
 import datetime as dt
 from typing import Iterable, Mapping
 
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from .live_shared import DEFAULT_SHM_NAME, LiveViewReader
 
 
-def _clear_terminal() -> None:
-    print("\033[2J\033[H", end="")
+def make_layout() -> Layout:
+    layout = Layout()
+    layout.split(
+        Layout(name="header", size=3),
+        Layout(name="main", size=10),
+        Layout(name="footer", ratio=1),
+    )
+    layout["footer"].split_row(
+        Layout(name="target_activity"),
+        Layout(name="our_activity"),
+    )
+    return layout
+
+
+def generate_header() -> Panel:
+    grid = Table.grid(expand=True)
+    grid.add_column(justify="center", ratio=1)
+    grid.add_row(
+        "[b]PolyCopy Live View[/b] | " + dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    return Panel(grid, style="white on blue")
 
 
 def _format_ts(value: object | None) -> str:
@@ -71,94 +97,192 @@ def _merge_positions(snapshot: Mapping[str, object]) -> list[dict]:
     return [dict({"asset_id": aid}, **data) for aid, data in combined.items()]
 
 
-def _render_positions(snapshot: Mapping[str, object]) -> str:
+def generate_positions_table(snapshot: Mapping[str, object]) -> Table:
+    copy_factor = _coerce_float(snapshot.get("copy_factor"), default=1.0)
+    table = Table(title=f"Positions (Target vs Ours) [Copy Factor: {copy_factor:.2f}]", expand=True, border_style="blue")
+    table.add_column("Market", style="cyan", no_wrap=True)
+    table.add_column("Outcome", style="magenta")
+    table.add_column("Tgt Qty", justify="right")
+    table.add_column("Adj Tgt Qty", justify="right")
+    table.add_column("Our Qty", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Tgt Notional", justify="right")
+    table.add_column("Our Notional", justify="right")
+    table.add_column("Diff Qty", justify="right")
+    table.add_column("Diff Notional", justify="right")
+
     rows = _merge_positions(snapshot)
     if not rows:
-        return "Positions (target vs simulated)\n(no data yet)"
-    lines = [
-        "Positions (target vs simulated)",
-        f"{'Market':30} {'Outcome':6} {'TgtQty':>10} {'OurQty':>10} {'Price':>8} {'TgtNot':>10} {'OurNot':>10} {'TgtAvg':>9} {'OurAvg':>9} {'ΔQty':>9} {'ΔNot':>10}",
-    ]
+        return table
+
     for row in sorted(rows, key=lambda r: r.get("market", "")):
         target = row.get("target") or {}
         ours = row.get("ours") or {}
         price = _coerce_float(row.get("price"), default=0.0)
         if not price:
             price = _best_price(target if isinstance(target, Mapping) else None, ours if isinstance(ours, Mapping) else None)
+        
         tgt_qty = _coerce_float(target.get("size") if isinstance(target, Mapping) else None)
+        adj_tgt_qty = tgt_qty * copy_factor
         our_qty = _coerce_float(ours.get("size") if isinstance(ours, Mapping) else None)
-        tgt_avg = _coerce_float(target.get("average_price") if isinstance(target, Mapping) else None)
-        our_avg = _coerce_float(ours.get("average_price") if isinstance(ours, Mapping) else None)
+        
         tgt_notional = abs(tgt_qty) * price
         our_notional = abs(our_qty) * price
-        diff_qty = our_qty - tgt_qty
-        diff_notional = our_notional - tgt_notional
-        lines.append(
-            f"{str(row.get('market',''))[:30]:30} {str(row.get('outcome',''))[:6]:6} "
-            f"{tgt_qty:10.2f} {our_qty:10.2f} {price:8.3f} {tgt_notional:10.2f} {our_notional:10.2f} "
-            f"{tgt_avg:9.3f} {our_avg:9.3f} {diff_qty:9.2f} {diff_notional:10.2f}"
+        diff_qty = our_qty - adj_tgt_qty
+        diff_notional = our_notional - (abs(adj_tgt_qty) * price)
+
+        market_name = str(row.get('market',''))[:30]
+        outcome_name = str(row.get('outcome',''))[:6]
+        
+        diff_style = "red" if abs(diff_notional) > 1.0 else "green"
+
+        table.add_row(
+            market_name,
+            outcome_name,
+            f"{tgt_qty:.2f}",
+            f"{adj_tgt_qty:.2f}",
+            f"{our_qty:.2f}",
+            f"{price:.3f}",
+            f"{tgt_notional:.2f}",
+            f"{our_notional:.2f}",
+            f"[{diff_style}]{diff_qty:.2f}[/{diff_style}]",
+            f"[{diff_style}]{diff_notional:.2f}[/{diff_style}]",
         )
-    return "\n".join(lines)
+    return table
 
 
-def _render_trades(snapshot: Mapping[str, object]) -> str:
-    trades = []
-    trade_section = snapshot.get("trades") if isinstance(snapshot.get("trades"), Mapping) else {}
-    if isinstance(trade_section, Mapping):
-        trades.extend([(t, "T") for t in trade_section.get("target", []) or []])
-        trades.extend([(t, "O") for t in trade_section.get("orders", []) or []])
-    if not trades:
-        return "Trades / Orders\n(no trades yet)"
-    trades.sort(key=lambda item: _coerce_float(item[0].get("timestamp"), 0.0), reverse=True)
-    lines = [
-        "Trades / Orders (T=target trade, O=simulated order)",
-        f"{'Src':3} {'Time':8} {'Side':6} {'Qty':>9} {'Price':>9} {'Outcome':6} {'Market':30}",
-    ]
-    for entry, label in trades:
-        side = (entry.get("side") if isinstance(entry, Mapping) else "") or ""
-        qty = _coerce_float(entry.get("size") if isinstance(entry, Mapping) else None)
-        price = _coerce_float(entry.get("price") if isinstance(entry, Mapping) else None)
-        outcome = str(entry.get("outcome") if isinstance(entry, Mapping) else "")[:6]
-        market = str(entry.get("market") if isinstance(entry, Mapping) else "")[:30]
-        ts = _format_ts(entry.get("timestamp") if isinstance(entry, Mapping) else None)
-        lines.append(f"{label:3} {ts:8} {side.upper():6} {qty:9.3f} {price:9.3f} {outcome:6} {market:30}")
-    return "\n".join(lines)
+def generate_target_activity_table(snapshot: Mapping[str, object], max_rows: int = 10) -> Table:
+    table = Table(title="Target Activity", expand=True, border_style="green")
+    table.add_column("Time", style="dim")
+    table.add_column("Market")
+    table.add_column("Side")
+    table.add_column("Size", justify="right")
+    table.add_column("Price", justify="right")
+
+    trades_data = snapshot.get("trades") or {}
+    if not isinstance(trades_data, dict):
+        trades_data = {}
+        
+    target_trades = trades_data.get("target") or []
+    
+    items = []
+    for t in target_trades:
+        if isinstance(t, dict):
+            items.append(t)
+            
+    # Sort by timestamp descending
+    items.sort(key=lambda x: _coerce_float(x.get("timestamp"), 0), reverse=True)
+    
+    for item in items[:max_rows]:
+        ts = _format_ts(item.get("timestamp"))
+        market = str(item.get("market", ""))[:20]
+        side = str(item.get("side", ""))
+        size = _coerce_float(item.get("size"))
+        price = _coerce_float(item.get("price"))
+        
+        color = "green" if side.lower() == "buy" else "red"
+        
+        table.add_row(
+            ts,
+            market,
+            f"[{color}]{side}[/{color}]",
+            f"{size:.2f}",
+            f"{price:.3f}",
+        )
+        
+    return table
 
 
-async def _render_loop(*, shm_name: str, refresh: float) -> None:
-    try:
-        reader = LiveViewReader(name=shm_name)
-    except FileNotFoundError as exc:  # pragma: no cover - runtime path
-        raise SystemExit(
-            f"Shared memory segment '{shm_name}' not found. Start python -m polycopy.main with --dry-run/--paper "
-            f"and ensure both main and live_view use the same --shm-name (default: {DEFAULT_SHM_NAME})."
-        ) from exc
-    while True:
-        snapshot = reader.read()
-        _clear_terminal()
-        now = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Polycopy live view @ {now} UTC\n")
-        print(_render_positions(snapshot))
-        print()
-        print(_render_trades(snapshot))
-        await asyncio.sleep(refresh)
+def generate_our_activity_table(snapshot: Mapping[str, object], max_rows: int = 10) -> Table:
+    table = Table(title="Our/Sim Activity", expand=True, border_style="yellow")
+    table.add_column("Time", style="dim")
+    table.add_column("Market")
+    table.add_column("Side")
+    table.add_column("Size", justify="right")
+    table.add_column("Price", justify="right")
+
+    trades_data = snapshot.get("trades") or {}
+    if not isinstance(trades_data, dict):
+        trades_data = {}
+        
+    orders = trades_data.get("orders") or []
+    
+    items = []
+    for o in orders:
+        if isinstance(o, dict):
+            items.append(o)
+            
+    # Sort by timestamp descending
+    items.sort(key=lambda x: _coerce_float(x.get("timestamp"), 0), reverse=True)
+    
+    for item in items[:max_rows]:
+        ts = _format_ts(item.get("timestamp"))
+        market = str(item.get("market", ""))[:20]
+        side = str(item.get("side", ""))
+        size = _coerce_float(item.get("size"))
+        price = _coerce_float(item.get("price"))
+        
+        color = "green" if side.lower() == "buy" else "red"
+        
+        table.add_row(
+            ts,
+            market,
+            f"[{color}]{side}[/{color}]",
+            f"{size:.2f}",
+            f"{price:.3f}",
+        )
+        
+    return table
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Live terminal viewer for dry-run/paper shared state.")
-    parser.add_argument("--shm-name", default=DEFAULT_SHM_NAME, help="Shared memory segment name to read from")
-    parser.add_argument("--refresh", type=float, default=1.5, help="Refresh interval in seconds")
-    return parser.parse_args(argv)
+async def run_live_view(shm_name: str) -> None:
+    reader = LiveViewReader(name=shm_name)
+    layout = make_layout()
+    console = Console()
+    
+    with Live(layout, refresh_per_second=4, screen=True, console=console) as live:
+        while True:
+            try:
+                snapshot = reader.read()
+                layout["header"].update(generate_header())
+                
+                positions_table = generate_positions_table(snapshot)
+                layout["main"].update(positions_table)
+                
+                # Dynamic sizing for positions table
+                # Overhead: Title/Header/Borders ~ 6 lines
+                table_rows = len(positions_table.rows)
+                target_height = table_rows + 6
+                
+                # Ensure footer has at least 8 lines
+                available_height = console.height - 3 # minus header
+                max_main_height = max(5, available_height - 8)
+                
+                layout["main"].size = min(target_height, max_main_height)
+                
+                footer_height = console.height - 3 - layout["main"].size
+                # Estimate rows: height - 2 (borders) - 1 (header) = height - 3. 
+                # Let's use height - 4 to be safe.
+                activity_rows = max(0, footer_height - 4)
 
-
-async def main_async(argv: list[str] | None = None) -> None:
-    args = _parse_args(argv)
-    await _render_loop(shm_name=args.shm_name, refresh=args.refresh)
+                layout["target_activity"].update(generate_target_activity_table(snapshot, max_rows=activity_rows))
+                layout["our_activity"].update(generate_our_activity_table(snapshot, max_rows=activity_rows))
+            except Exception:
+                # In case of read error or empty shm, just wait
+                pass
+            await asyncio.sleep(0.25)
 
 
 def main() -> None:
-    asyncio.run(main_async())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--shm-name", default=DEFAULT_SHM_NAME)
+    args = parser.parse_args()
+    
+    try:
+        asyncio.run(run_live_view(args.shm_name))
+    except KeyboardInterrupt:
+        pass
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Dict
 
 from .clob_exec import ExecutionEngine
 from .data_api import DataAPIClient
 from .live_shared import LiveViewWriter
+from .orderbook import OrderBookManager
 from .risk import RiskLimits
 from .state import PortfolioState, PositionTracker
 
@@ -23,12 +25,24 @@ async def reconcile_once(
     risk_limits: RiskLimits,
     position_tracker: PositionTracker | None = None,
     live_view: LiveViewWriter | None = None,
+    orderbook_manager: OrderBookManager | None = None,
+    dry_run: bool = False,
 ) -> None:
     target_positions = PortfolioState.from_api(await data_api.fetch_positions(target_wallet))
-    our_positions = PortfolioState.from_api(await data_api.fetch_positions(our_wallet))
+    
+    if not dry_run:
+        our_positions = PortfolioState.from_api(await data_api.fetch_positions(our_wallet))
+    else:
+        if position_tracker:
+            _, our_positions = await position_tracker.snapshot()
+        else:
+            our_positions = PortfolioState()
 
     if position_tracker:
-        await position_tracker.replace(target_state=target_positions, our_state=our_positions)
+        # If dry_run, we don't want to overwrite our simulated positions with empty/stale data
+        # unless we want to sync with something. Here we assume dry_run maintains its own state.
+        await position_tracker.replace(target_state=target_positions, our_state=our_positions if not dry_run else None)
+
     if live_view:
         live_view.update_positions(target=target_positions, ours=our_positions)
 
@@ -46,23 +60,63 @@ async def reconcile_once(
 
     for asset_id, delta in deltas.items():
         side = "buy" if delta > 0 else "sell"
-        # Assume unit price when computing exposure; REST book lookup would refine this.
-        notional = abs(delta)
         pos = target_positions.positions.get(asset_id)
         market_id = pos.market if pos and pos.market else (pos.outcome if pos else "unknown")
         outcome = pos.outcome if pos else "unknown"
+        
+        price_used = 1.0
+        exposure_price = 1.0
+        if orderbook_manager:
+            await orderbook_manager.ensure_subscribed(asset_id)
+            mid_price = await orderbook_manager.get_mid_price(asset_id)
+            quote_price = await orderbook_manager.get_best_quote(asset_id, side)
+            if quote_price is not None:
+                price_used = quote_price
+            elif mid_price is not None:
+                price_used = mid_price
+            else:
+                logger.warning("No quote found for %s %s, using fallback price 1.0", side, asset_id)
+
+            exposure_price = mid_price if mid_price is not None else price_used
+        else:
+            exposure_price = price_used
+
+        notional = abs(delta) * exposure_price
+        
         await executor.place_order(
             asset_id=asset_id,
             market_id=market_id,
             outcome=outcome,
             side=side,
             size=abs(delta),
-            limit_price=1.0,
-            intent_key=f"reconcile-{asset_id}",
+            limit_price=price_used,
+            intent_key=f"reconcile-{asset_id}-{time.time_ns()}",
             target_tx="reconcile",
             current_market_exposure=notional,
             current_portfolio_exposure=notional,
         )
+        
+        if position_tracker:
+            await position_tracker.apply_our_execution(
+                asset_id=asset_id,
+                outcome=outcome,
+                market=market_id,
+                size=delta,
+                price=price_used,
+            )
+            
+        if live_view:
+            live_view.record_order(
+                asset_id=asset_id,
+                market=market_id,
+                outcome=outcome,
+                side=side,
+                size=abs(delta),
+                price=price_used,
+            )
+            if position_tracker:
+                _, current_ours = await position_tracker.snapshot()
+                live_view.update_positions(target=target_positions, ours=current_ours)
 
 
 async def reconcile_loop(
@@ -77,6 +131,8 @@ async def reconcile_loop(
     stop_event: asyncio.Event,
     position_tracker: PositionTracker | None = None,
     live_view: LiveViewWriter | None = None,
+    orderbook_manager: OrderBookManager | None = None,
+    dry_run: bool = False,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -89,6 +145,8 @@ async def reconcile_loop(
                 risk_limits=risk_limits,
                 position_tracker=position_tracker,
                 live_view=live_view,
+                orderbook_manager=orderbook_manager,
+                dry_run=dry_run,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("reconcile iteration failed: %s", exc)

@@ -107,6 +107,7 @@ class BackstopPoller:
                         continue
                     if self._seen(ts, tx):
                         continue
+                    logger.info("Backstop found new trade: %s", tx)
                     await self._publish(trade)
                     self._last_seen = (ts, tx)
             except Exception as exc:  # noqa: BLE001

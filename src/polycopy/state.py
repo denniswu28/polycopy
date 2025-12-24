@@ -73,9 +73,12 @@ class PortfolioState:
     def notional(self, prices: Optional[Dict[str, float]] = None) -> float:
         total = 0.0
         for asset_id, pos in self.positions.items():
-            price = 1.0
             if prices and asset_id in prices:
                 price = prices[asset_id]
+            elif pos.average_price:
+                price = pos.average_price
+            else:
+                price = 1.0
             total += abs(pos.size) * price
         return total
 
@@ -101,10 +104,11 @@ class PositionTracker:
             self.target = PortfolioState.from_api(target_positions)
             self.ours = PortfolioState.from_api(our_positions)
 
-    async def replace(self, *, target_state: PortfolioState, our_state: PortfolioState) -> None:
+    async def replace(self, *, target_state: PortfolioState, our_state: PortfolioState | None = None) -> None:
         async with self._lock:
             self.target = target_state
-            self.ours = our_state
+            if our_state is not None:
+                self.ours = our_state
 
     async def update_target_from_trade(
         self, *, asset_id: str, outcome: str, market: str, size: float, price: float | None
