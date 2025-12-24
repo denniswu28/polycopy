@@ -146,6 +146,17 @@ class PositionTracker:
             our_pos.average_price = _updated_average_price(prev_size, our_pos.average_price, size, price)
             return our_pos
 
+    async def drop_markets(self, markets: set[str]) -> None:
+        if not markets:
+            return
+        async with self._lock:
+            self.target.positions = {
+                aid: pos for aid, pos in self.target.positions.items() if pos.market not in markets
+            }
+            self.ours.positions = {
+                aid: pos for aid, pos in self.ours.positions.items() if pos.market not in markets
+            }
+
     async def snapshot(self) -> tuple[PortfolioState, PortfolioState]:
         async with self._lock:
             # Return deep copies to avoid concurrency issues

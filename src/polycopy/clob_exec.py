@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 import json
 import httpx
+from py_clob_client.client import ClobClient
 
 from .risk import RiskLimits, RiskError, validate_trade
 from .state import IntentStore
@@ -21,13 +22,52 @@ class MarketStatusChecker:
     market as active so that execution is not blocked by transient errors.
     """
 
-    def __init__(self, rest_url: str, ttl_seconds: float = 60.0) -> None:
-        self._client = httpx.AsyncClient(
-            base_url=rest_url.rstrip("/"),
-            timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
-        )
+    def __init__(self, rest_url: str, ttl_seconds: float = 60.0, chain_id: int = 137) -> None:
+        self._client = ClobClient(host=rest_url.rstrip("/"), chain_id=chain_id)
         self._cache: Dict[str, Tuple[bool, float]] = {}
         self._ttl = ttl_seconds
+
+    def _get_multiple_markets(self, markets: set[str]) -> Dict[str, Dict[str, Any]]:
+        """Best-effort bulk market fetch using the CLOB client."""
+        remaining = set(markets)
+        results: Dict[str, Dict[str, Any]] = {}
+        next_cursor: str | None = "MA=="
+        attempts = 0
+        while remaining and next_cursor:
+            try:
+                resp = self._client.get_markets(next_cursor=next_cursor)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("get_markets failed: %s", exc)
+                break
+            data = resp.get("data") if isinstance(resp, dict) else resp
+            if not data:
+                break
+            for item in data:
+                slug = item.get("slug") or item.get("market_slug")
+                mid = str(item.get("id") or item.get("condition_id") or "")
+                keys = {slug, mid}
+                for key in keys:
+                    if key and key in remaining:
+                        results[key] = item
+                        remaining.discard(key)
+            if isinstance(resp, dict):
+                next_cursor = resp.get("next_cursor")
+            else:
+                next_cursor = None
+            attempts += 1
+            if attempts > 10 or not next_cursor or next_cursor == "END_CURSOR":
+                break
+
+        for mid in list(remaining):
+            if not mid.isdigit():
+                continue
+            try:
+                item = self._client.get_market(mid)
+                results[mid] = item
+                remaining.discard(mid)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("get_market failed for %s: %s", mid, exc)
+        return results
 
     async def is_active(self, market_id: str) -> bool:
         now = time.time()
@@ -35,37 +75,49 @@ class MarketStatusChecker:
         if cached and (now - cached[1]) < self._ttl:
             return cached[0]
         try:
-            if market_id.isdigit():
-                resp = await self._client.get(f"/markets/{market_id}")
-                resp.raise_for_status()
-                data = resp.json()
-            else:
-                # Assume slug
-                resp = await self._client.get("/markets", params={"slug": market_id})
-                resp.raise_for_status()
-                results = resp.json()
-                if not results or not isinstance(results, list):
-                    # If slug not found, default to active to avoid blocking?
-                    # Or default to inactive?
-                    # If we can't find it, we probably shouldn't trade.
-                    logger.warning("market not found for slug %s", market_id)
-                    return False
-                data = results[0]
-
-            closed = data.get("closed")
-            if closed is not None:
-                active = not bool(closed)
-            else:
-                active = bool(data.get("active", True))
-            self._cache[market_id] = (active, now)
-            logger.debug("market status for %s active=%s", market_id, active)
-            return active
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.debug("market status check failed for %s: %s", market_id, exc)
+            markets = await asyncio.to_thread(self._get_multiple_markets, {market_id})
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("market status fetch failed for %s: %s", market_id, exc)
             return True
+        data = markets.get(market_id)
+        if not data:
+            logger.warning("market not found for %s", market_id)
+            return False
+
+        closed = data.get("closed")
+        if closed is not None:
+            active = not bool(closed)
+        else:
+            active = bool(data.get("active", True))
+        self._cache[market_id] = (active, now)
+        logger.debug("market status for %s active=%s", market_id, active)
+        return active
+
+    async def refresh_markets(self, markets: set[str]) -> Dict[str, bool]:
+        """Fetch and cache market states for a batch of markets."""
+        if not markets:
+            return {}
+        try:
+            results = await asyncio.to_thread(self._get_multiple_markets, markets)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("bulk market status fetch failed: %s", exc)
+            return {}
+        now = time.time()
+        statuses: Dict[str, bool] = {}
+        for key in markets:
+            data = results.get(key)
+            if not data:
+                self._cache[key] = (False, now)
+                statuses[key] = False
+                continue
+            closed = data.get("closed")
+            active = not bool(closed) if closed is not None else bool(data.get("active", True))
+            self._cache[key] = (active, now)
+            statuses[key] = active
+        return statuses
 
     async def close(self) -> None:
-        await self._client.aclose()
+        return
 
 
 class ExecutionEngine:
@@ -121,21 +173,29 @@ class ExecutionEngine:
         side: str,
         size: float,
         limit_price: float,
+        valuation_price: float | None = None,
         intent_key: str,
         target_tx: str,
         current_market_exposure: float,
         current_portfolio_exposure: float,
     ) -> Optional[Dict[str, Any]]:
-        notional = abs(size) * limit_price
+        pricing_price = (
+            valuation_price
+            if valuation_price is not None
+            else (limit_price if limit_price > 0 else 1.0)
+        )
+        notional = abs(size) * pricing_price
         resulting_market_notional = current_market_exposure + notional
         resulting_portfolio = current_portfolio_exposure + notional
         validate_trade(
             market_id=market_id,
             outcome=outcome,
             notional=notional,
+            size=size,
             resulting_market_notional=resulting_market_notional,
             resulting_portfolio_exposure=resulting_portfolio,
             limits=self.risk_limits,
+            order_type="limit",
         )
 
         fresh = await self.intent_store.record_intent_if_new(target_tx, intent_key)
