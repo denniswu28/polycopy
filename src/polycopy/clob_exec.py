@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import json
 import httpx
 
@@ -21,7 +21,7 @@ class MarketStatusChecker:
             base_url=rest_url.rstrip("/"),
             timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
         )
-        self._cache: Dict[str, tuple[bool, float]] = {}
+        self._cache: Dict[str, Tuple[bool, float]] = {}
         self._ttl = ttl_seconds
 
     async def is_active(self, market_id: str) -> bool:
@@ -39,7 +39,7 @@ class MarketStatusChecker:
             self._cache[market_id] = (active, now)
             logger.debug("market status for %s active=%s", market_id, active)
             return active
-        except Exception as exc:  # noqa: BLE001
+        except (httpx.HTTPError, ValueError) as exc:  # noqa: BLE001
             logger.debug("market status check failed for %s: %s", market_id, exc)
             return True
 

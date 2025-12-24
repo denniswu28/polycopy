@@ -133,16 +133,17 @@ class OrderBookManager:
 
     async def _refresh_from_rest(self, asset_id: str) -> Optional[BestQuote]:
         now = time.time()
-        last_fetch = self._rest_fetch_ts.get(asset_id, 0)
-        if now - last_fetch < 1.0:
-            async with self._lock:
+        async with self._lock:
+            last_fetch = self._rest_fetch_ts.get(asset_id, 0)
+            if now - last_fetch < 1.0:
                 return self._quotes.get(asset_id)
+            self._rest_fetch_ts[asset_id] = now
 
         try:
             resp = await self._rest_client.get("/book", params={"token_id": asset_id})
             resp.raise_for_status()
             data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        except (httpx.HTTPError, ValueError) as exc:  # noqa: BLE001
             logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
             async with self._lock:
                 return self._quotes.get(asset_id)
@@ -169,7 +170,7 @@ class OrderBookManager:
         )
         async with self._lock:
             self._quotes[asset_id] = quote
-            self._rest_fetch_ts[asset_id] = now
+            self._rest_fetch_ts[asset_id] = time.time()
         logger.info("fetched rest orderbook for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
         return quote
 

@@ -436,7 +436,8 @@ async def main_async(argv: list[str] | None = None) -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     await executor.close()
-    await orderbook_manager.close()
+    if orderbook_manager:
+        await orderbook_manager.close()
     await data_api.close()
     if live_view_writer:
         live_view_writer.close()
