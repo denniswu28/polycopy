@@ -6,6 +6,7 @@ import signal
 from pathlib import Path
 from typing import Any, Dict
 import json
+import httpx
 try:
     import uvloop
 except ImportError:  # pragma: no cover
@@ -28,6 +29,7 @@ from .state import IntentStore, PositionTracker, PortfolioState
 from .util import get_first
 from .util import logging as log_util
 from .util.time import check_clock_skew
+from py_clob_client.exceptions import PolyException
 
 logger = logging.getLogger(__name__)
 # Limit initial trade CSV backfill to a manageable batch to avoid large downloads on startup.
@@ -53,6 +55,78 @@ def _side_from_size(value: float) -> str:
     if value < 0:
         return "sell"
     return ""
+
+
+async def _coalesce_events(event: Dict[str, Any], queue: asyncio.Queue) -> Dict[str, Any]:
+    """Combine queued events on the same market/asset and side into a single payload."""
+    raw_size = event.get("size")
+    try:
+        base_size = float(raw_size)
+    except (TypeError, ValueError):
+        return event
+    base_signed = _signed_size_from_event(event, base_size)
+    if base_signed is None:
+        return event
+
+    base_market = event.get("market") or ""
+    base_asset = event.get("asset_id")
+    base_side = _side_from_size(base_signed)
+    total_signed = base_signed
+    tx_hashes = {event.get("tx_hash")} if event.get("tx_hash") else set()
+    latest_ts = event.get("timestamp")
+    unmatched: list[Dict[str, Any]] = []
+
+    while True:
+        try:
+            candidate = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        else:
+            try:
+                queue.task_done()
+            except ValueError:
+                pass
+        cand_raw_size = candidate.get("size")
+        try:
+            cand_size = float(cand_raw_size)
+        except (TypeError, ValueError):
+            unmatched.append(candidate)
+            continue
+        cand_signed = _signed_size_from_event(candidate, cand_size)
+        cand_side = _side_from_size(cand_signed or 0)
+        if (
+            cand_signed is not None
+            and cand_side == base_side
+            and (candidate.get("market") or "") == base_market
+            and candidate.get("asset_id") == base_asset
+        ):
+            total_signed += cand_signed
+            if candidate.get("tx_hash"):
+                tx_hashes.add(candidate.get("tx_hash"))
+            try:
+                c_ts = float(candidate.get("timestamp"))
+                if latest_ts is None or c_ts > float(latest_ts):
+                    latest_ts = c_ts
+            except (TypeError, ValueError):
+                pass
+        else:
+            unmatched.append(candidate)
+
+    for item in unmatched:
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            break
+
+    merged = dict(event)
+    merged["size"] = abs(total_signed)
+    merged["side"] = base_side
+    merged["is_buy"] = base_side == "buy"
+    if tx_hashes:
+        merged["tx_hash"] = "|".join(sorted(tx_hashes))
+    if latest_ts is not None:
+        merged["timestamp"] = latest_ts
+    return merged
 
 
 async def live_view_update_positions(writer: LiveViewWriter, tracker: PositionTracker) -> None:
@@ -164,24 +238,27 @@ async def process_event(
         return
 
     order_side = _side_from_size(delta)
+    quote_price = None
+    mid_price = None
     if orderbook_manager:
         quote_price = await orderbook_manager.get_best_quote(asset_id, order_side)
         mid_price = await orderbook_manager.get_mid_price(asset_id)
-    else:
-        quote_price = None
-        mid_price = None
 
+    valuation_price = None
     if quote_price is not None:
-        price_used = quote_price
+        valuation_price = quote_price
+    elif mid_price is not None:
+        valuation_price = mid_price
     elif price is not None:
-        price_used = price
+        valuation_price = price
     else:
-        price_used = target_pos.average_price or 1.0
-        logger.warning("Using fallback price %s for %s (side=%s)", price_used, asset_id, order_side)
+        valuation_price = target_pos.average_price or 1.0
+        logger.warning("Using fallback price %s for %s (side=%s)", valuation_price, asset_id, order_side)
 
     # Use mid price for valuation if available; otherwise fall back to
     # the actual limit price we intend to use.
-    exposure_price = mid_price if mid_price is not None else price_used
+    exposure_price = mid_price if mid_price is not None else valuation_price
+    limit_price = settings.buy_limit_price if order_side == "buy" else settings.sell_limit_price
 
     # Recompute portfolio notional using mid prices across our book.
     _, our_state = await position_tracker.snapshot()
@@ -198,7 +275,10 @@ async def process_event(
 
     portfolio_notional = our_state.notional(prices=mid_prices)
 
-    notional = abs(delta) * exposure_price
+    pricing_for_exposure = exposure_price if exposure_price is not None else 1.0
+    if exposure_price is None:
+        logger.warning("Exposure price missing for %s; using fallback %s", asset_id, pricing_for_exposure)
+    notional = abs(delta) * pricing_for_exposure
     market_id = target_pos.market if target_pos.market else target_pos.outcome
     await executor.place_order(
         asset_id=asset_id,
@@ -206,7 +286,8 @@ async def process_event(
         outcome=target_pos.outcome,
         side=order_side,
         size=abs(delta),
-        limit_price=price_used,
+        limit_price=limit_price,
+        valuation_price=exposure_price or valuation_price,
         intent_key=f"{event.get('tx_hash')}-{asset_id}",
         target_tx=event.get("tx_hash") or "unknown",
         current_market_exposure=notional,
@@ -217,7 +298,7 @@ async def process_event(
         outcome=target_pos.outcome,
         market=market_id,
         size=delta,
-        price=price_used,
+        price=quote_price or valuation_price or limit_price,
     )
     if live_view:
         live_view.record_order(
@@ -226,7 +307,7 @@ async def process_event(
             outcome=target_pos.outcome,
             side=order_side,
             size=abs(delta),
-            price=price_used,
+            price=limit_price,
         )
         await live_view_update_positions(live_view, position_tracker)
 
@@ -251,6 +332,8 @@ async def consume_events(
         except asyncio.TimeoutError:
             continue
         try:
+            # Coalesce backlog items in the consumer; this loop is single-consumer so we have a consistent snapshot.
+            event = await _coalesce_events(event, queue)
             await process_event(
                 event=event,
                 settings=settings,
@@ -308,6 +391,36 @@ async def refresh_watchlist(
             continue
 
 
+async def monitor_closed_markets(
+    *,
+    position_tracker: PositionTracker,
+    market_status_checker: MarketStatusChecker,
+    interval: float,
+    stop_event: asyncio.Event,
+    live_view: LiveViewWriter | None = None,
+) -> None:
+    while not stop_event.is_set():
+        target_state, our_state = await position_tracker.snapshot()
+        markets = {
+            pos.market for pos in list(target_state.positions.values()) + list(our_state.positions.values()) if pos.market
+        }
+        try:
+            statuses = await market_status_checker.refresh_markets(set(markets))
+        except (PolyException, httpx.HTTPError, ValueError) as exc:
+            logger.debug("market status refresh failed: %s", exc)
+            statuses = {}
+        closed_markets = {mid for mid, active in statuses.items() if not active}
+        if closed_markets:
+            logger.info("Detected closed markets %s; clearing related positions", closed_markets)
+            await position_tracker.drop_markets(closed_markets)
+            if live_view:
+                await live_view_update_positions(live_view, position_tracker)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def main_async(argv: list[str] | None = None) -> None:
     if uvloop:
         uvloop.install()
@@ -327,7 +440,7 @@ async def main_async(argv: list[str] | None = None) -> None:
     data_api = DataAPIClient(settings.data_api_url, settings.api_key)  # type: ignore[arg-type]
     risk_limits = RiskLimits.from_settings(settings)
     intent_store = IntentStore(settings.db_path)
-    market_status_checker = MarketStatusChecker(settings.gamma_api_url)
+    market_status_checker = MarketStatusChecker(settings.clob_rest_url, chain_id=settings.chain_id)
     executor = ExecutionEngine(
         rest_url=settings.clob_rest_url,
         api_key=settings.api_key,  # type: ignore[arg-type]
@@ -359,6 +472,7 @@ async def main_async(argv: list[str] | None = None) -> None:
     market_client = MarketBookClient(
         url="wss://ws-subscriptions-clob.polymarket.com/ws/market",
         orderbook_manager=orderbook_manager,
+        heartbeat_interval=settings.http_poll_interval,
     )
     await orderbook_manager.bootstrap_from_portfolios(
         PortfolioState.from_api(target_positions),
@@ -430,6 +544,16 @@ async def main_async(argv: list[str] | None = None) -> None:
                 market_status_checker=market_status_checker,
             ),
             name="watchlist",
+        ),
+        asyncio.create_task(
+            monitor_closed_markets(
+                position_tracker=position_tracker,
+                market_status_checker=market_status_checker,
+                interval=settings.http_poll_interval,
+                stop_event=stop_event,
+                live_view=live_view_writer,
+            ),
+            name="market_status_monitor",
         ),
         asyncio.create_task(
             reconcile_loop(

@@ -5,8 +5,10 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Set
-
 import httpx
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import BookParams
+from py_clob_client.exceptions import PolyException
 
 from .data_api import DataAPIClient
 from .state import PortfolioState
@@ -21,7 +23,7 @@ class BestQuote:
     best_bid: float | None
     best_ask: float | None
     last_update_ms: int
-    last_source: Literal["book", "price_change", "rest_book", "last_trade"]
+    last_source: Literal["book", "price_change", "rest_book", "last_trade", "get_prices"]
     tick_size: float | None = None
 
 
@@ -39,12 +41,9 @@ class OrderBookManager:
         self._quotes: Dict[str, BestQuote] = {}
         self._subscriptions: Set[str] = set()
         self._lock = asyncio.Lock()
-        self._rest_client = httpx.AsyncClient(
-            base_url=clob_rest_url,
-            timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
-        )
-        self._rest_fetch_ts: Dict[str, float] = {}
-        self._rest_inflight: Dict[str, asyncio.Task[Optional[BestQuote]]] = {}
+        self._clob_client = ClobClient(host=clob_rest_url)
+        self._price_fetch_ts: Dict[str, float] = {}
+        self._price_inflight: Dict[str, asyncio.Task[Optional[BestQuote]]] = {}
 
     async def update_from_ws(self, message: Dict) -> None:
         """Process WS message to update quotes."""
@@ -144,18 +143,18 @@ class OrderBookManager:
                 continue
         return None
 
-    async def _refresh_from_rest(self, asset_id: str) -> Optional[BestQuote]:
+    async def _refresh_from_clob(self, asset_id: str) -> Optional[BestQuote]:
         now = time.time()
         async with self._lock:
-            last_fetch = self._rest_fetch_ts.get(asset_id, 0)
-            inflight = self._rest_inflight.get(asset_id)
+            last_fetch = self._price_fetch_ts.get(asset_id, 0)
+            inflight = self._price_inflight.get(asset_id)
             if inflight:
                 result = await inflight
                 return result if result is not None else self._quotes.get(asset_id)
             if now - last_fetch < 1.0:
                 return self._quotes.get(asset_id)
-            task = asyncio.create_task(self._do_fetch_rest(asset_id))
-            self._rest_inflight[asset_id] = task
+            task = asyncio.create_task(self._do_fetch_prices(asset_id))
+            self._price_inflight[asset_id] = task
         try:
             result = await task
             if result is None:
@@ -164,50 +163,91 @@ class OrderBookManager:
             return result
         finally:
             async with self._lock:
-                self._rest_inflight.pop(asset_id, None)
+                self._price_inflight.pop(asset_id, None)
 
-    async def _do_fetch_rest(self, asset_id: str) -> Optional[BestQuote]:
+    async def _do_fetch_prices(self, asset_id: str) -> Optional[BestQuote]:
         try:
-            resp = await self._rest_client.get("/book", params={"token_id": asset_id})
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                # Market likely not on CLOB (AMM-only or closed)
-                logger.debug("orderbook not found on CLOB for %s (404)", asset_id)
-                return None
-            logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
-            return None
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
+            params = [
+                BookParams(token_id=asset_id, side="BUY"),
+                BookParams(token_id=asset_id, side="SELL"),
+            ]
+            resp = await asyncio.to_thread(self._clob_client.get_prices, params)
+        except (PolyException, httpx.HTTPError, ValueError, TypeError) as exc:
+            logger.debug("clob get_prices failed for %s: %s", asset_id, exc)
             return None
 
-        bids = data.get("bids") or []
-        asks = data.get("asks") or []
-        best_bid = self._extract_best_price(bids)
-        best_ask = self._extract_best_price(asks)
-        tick_size = None
+        if not isinstance(resp, dict):
+            return None
+        entry = resp.get(asset_id, {})
+        # get_prices returns taker quotes: BUY maps to best ask, SELL maps to best bid.
+        best_ask_raw = entry.get("BUY") if isinstance(entry, dict) else None
+        best_bid_raw = entry.get("SELL") if isinstance(entry, dict) else None
         try:
-            tick_size_raw = data.get("tick_size")
-            tick_size = float(tick_size_raw) if tick_size_raw is not None else None
+            best_bid = float(best_bid_raw) if best_bid_raw is not None else None
         except (TypeError, ValueError):
-            tick_size = None
+            best_bid = None
+        try:
+            best_ask = float(best_ask_raw) if best_ask_raw is not None else None
+        except (TypeError, ValueError):
+            best_ask = None
+
         ts = int(time.time() * 1000)
         quote = BestQuote(
             asset_id=asset_id,
-            market=data.get("market", ""),
+            market="",
             best_bid=best_bid,
             best_ask=best_ask,
             last_update_ms=ts,
-            last_source="rest_book",
-            tick_size=tick_size,
+            last_source="get_prices",
+            tick_size=None,
         )
         async with self._lock:
             self._quotes[asset_id] = quote
-            self._rest_fetch_ts[asset_id] = time.time()
-            self._rest_inflight.pop(asset_id, None)
-        logger.info("fetched rest orderbook for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
+            self._price_fetch_ts[asset_id] = time.time()
         return quote
+
+    async def refresh_prices(self, asset_ids: list[str]) -> None:
+        tokens = sorted(set(asset_ids))
+        if not tokens:
+            return
+        params = []
+        for token in tokens:
+            params.append(BookParams(token_id=token, side="BUY"))
+            params.append(BookParams(token_id=token, side="SELL"))
+        try:
+            resp = await asyncio.to_thread(self._clob_client.get_prices, params)
+        except (PolyException, httpx.HTTPError, ValueError, TypeError) as exc:
+            logger.debug("bulk get_prices failed for %d assets: %s", len(tokens), exc)
+            return
+        if not isinstance(resp, dict):
+            return
+        ts = int(time.time() * 1000)
+        async with self._lock:
+            for token in tokens:
+                entry = resp.get(token, {}) if isinstance(resp, dict) else {}
+                # BUY corresponds to the best ask price, SELL corresponds to the best bid.
+                best_ask_raw = entry.get("BUY") if isinstance(entry, dict) else None
+                best_bid_raw = entry.get("SELL") if isinstance(entry, dict) else None
+                try:
+                    best_bid = float(best_bid_raw) if best_bid_raw is not None else None
+                except (TypeError, ValueError):
+                    best_bid = None
+                try:
+                    best_ask = float(best_ask_raw) if best_ask_raw is not None else None
+                except (TypeError, ValueError):
+                    best_ask = None
+                if best_bid is None and best_ask is None:
+                    continue
+                self._quotes[token] = BestQuote(
+                    asset_id=token,
+                    market="",
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    last_update_ms=ts,
+                    last_source="get_prices",
+                    tick_size=None,
+                )
+                self._price_fetch_ts[token] = time.time()
 
     def _is_stale(self, quote: BestQuote) -> bool:
         now_ms = int(time.time() * 1000)
@@ -223,7 +263,7 @@ class OrderBookManager:
             quote = self._quotes.get(asset_id)
             stale = quote is None or self._is_stale(quote)
         if stale:
-            quote = await self._refresh_from_rest(asset_id)
+            quote = await self._refresh_from_clob(asset_id)
         if not quote or self._is_stale(quote):
             logger.debug("no usable quote for %s side=%s", asset_id, side)
             return None
@@ -252,7 +292,7 @@ class OrderBookManager:
             quote = self._quotes.get(asset_id)
             stale = quote is None or self._is_stale(quote)
         if stale:
-            quote = await self._refresh_from_rest(asset_id)
+            quote = await self._refresh_from_clob(asset_id)
         if not quote or self._is_stale(quote):
             logger.debug("no usable mid price for %s", asset_id)
             return None
@@ -307,17 +347,24 @@ class OrderBookManager:
                     self._subscriptions.add(aid)
 
     async def close(self) -> None:
-        await self._rest_client.aclose()
+        close_fn = getattr(self._clob_client, "close", None)
+        if callable(close_fn):
+            await asyncio.to_thread(close_fn)
+        else:
+            logger.debug("ClobClient provides no close() hook; nothing to clean up")
 
     async def fetch_price(self, asset_id: str, side: str) -> Optional[float]:
-        """Fetch price from CLOB API (GET /price)."""
+        """Fetch price using CLOB get_prices."""
         try:
-            resp = await self._rest_client.get("/price", params={"token_id": asset_id, "side": side.upper()})
-            resp.raise_for_status()
-            data = resp.json()
-            price_str = data.get("price")
-            if price_str:
-                return float(price_str)
-        except (httpx.HTTPError, ValueError) as exc:
+            params = [BookParams(token_id=asset_id, side=side.upper())]
+            resp = await asyncio.to_thread(self._clob_client.get_prices, params)
+            if not isinstance(resp, dict):
+                return None
+            entry = resp.get(asset_id, {})
+            price_raw = entry.get(side.upper()) if isinstance(entry, dict) else None
+            if price_raw is None:
+                return None
+            return float(price_raw)
+        except (TypeError, ValueError, KeyError) as exc:
             logger.debug("fetch_price failed for %s %s: %s", asset_id, side, exc)
-        return None
+            return None

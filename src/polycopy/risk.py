@@ -14,6 +14,7 @@ class RiskLimits:
     max_notional_per_market: float
     max_portfolio_exposure: float
     min_trade_size: float
+    min_market_order_notional: float = 1.0
     blacklist_markets: Set[str] = field(default_factory=set)
     blacklist_outcomes: Set[str] = field(default_factory=set)
     slippage_bps: int = 50
@@ -25,6 +26,7 @@ class RiskLimits:
             max_notional_per_market=settings.max_notional_per_market,
             max_portfolio_exposure=settings.max_portfolio_exposure,
             min_trade_size=settings.min_trade_size,
+            min_market_order_notional=settings.min_market_order_notional,
             blacklist_markets=set(settings.blacklist_markets),
             blacklist_outcomes=set(settings.blacklist_outcomes),
             slippage_bps=settings.slippage_bps,
@@ -36,16 +38,23 @@ def validate_trade(
     market_id: str,
     outcome: str,
     notional: float,
+    size: float,
     resulting_market_notional: float,
     resulting_portfolio_exposure: float,
     limits: RiskLimits,
+    order_type: str = "limit",
 ) -> None:
     if market_id in limits.blacklist_markets:
         raise RiskError(f"market {market_id} is blacklisted")
     if outcome in limits.blacklist_outcomes:
         raise RiskError(f"outcome {outcome} is blacklisted")
-    if abs(notional) < limits.min_trade_size:
-        raise RiskError(f"trade below min size {limits.min_trade_size}")
+    order_type_l = order_type.lower()
+    if order_type_l == "market":
+        if abs(notional) < limits.min_market_order_notional:
+            raise RiskError(f"trade below min market notional {limits.min_market_order_notional}")
+    else:
+        if abs(size) < limits.min_trade_size:
+            raise RiskError(f"trade below min size {limits.min_trade_size}")
     if abs(notional) > limits.max_notional_per_trade:
         raise RiskError(f"trade exceeds per-trade notional {limits.max_notional_per_trade}")
     if resulting_market_notional > limits.max_notional_per_market:

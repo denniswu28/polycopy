@@ -1,8 +1,9 @@
+import asyncio
 import pytest
 from unittest.mock import AsyncMock
 
 from polycopy.config import Settings
-from polycopy.main import process_event
+from polycopy.main import _coalesce_events, process_event
 from polycopy.risk import RiskLimits
 from polycopy.state import PositionTracker
 
@@ -50,6 +51,7 @@ async def test_process_event_uses_cached_positions_and_updates_state():
     executor.place_order.assert_awaited_once()
     _, kwargs = executor.place_order.await_args
     assert kwargs["side"] == "buy"
+    assert kwargs["limit_price"] == 1.0
 
     target_state, our_state = await position_tracker.snapshot()
     assert target_state.positions["asset1"].size == pytest.approx(2.0)
@@ -98,7 +100,28 @@ async def test_process_event_handles_sell_reversal():
     executor.place_order.assert_awaited()
     _, kwargs = executor.place_order.await_args
     assert kwargs["side"] == "sell"
+    assert kwargs["limit_price"] == 0.0
 
     target_state, our_state = await position_tracker.snapshot()
     assert target_state.positions["asset1"].size == pytest.approx(-3.0)
     assert our_state.positions["asset1"].size == pytest.approx(-3.0)
+
+
+@pytest.mark.asyncio
+async def test_coalesce_events_merges_same_side_market():
+    queue: asyncio.Queue = asyncio.Queue()
+    base = {"asset_id": "asset1", "market": "m1", "size": 2.0, "is_buy": True, "side": "buy", "tx_hash": "tx1"}
+    await queue.put({"asset_id": "asset1", "market": "m1", "size": 3.0, "is_buy": True, "tx_hash": "tx2"})
+    await queue.put({"asset_id": "asset1", "market": "m1", "size": 1.0, "is_buy": False, "tx_hash": "tx3"})
+
+    merged = await _coalesce_events(base, queue)
+    assert merged["size"] == pytest.approx(5.0)
+    assert merged["side"] == "buy"
+    assert merged["is_buy"] is True
+    assert "tx1" in merged["tx_hash"]
+    assert "tx2" in merged["tx_hash"]
+    # The opposite-side trade should be re-queued
+    remaining = []
+    while not queue.empty():
+        remaining.append(queue.get_nowait())
+    assert any(evt.get("tx_hash") == "tx3" for evt in remaining)
