@@ -22,6 +22,7 @@ class DataAPIClient:
         await self.close()
 
     async def fetch_trades(self, user: str, limit: int = 50) -> List[Dict[str, Any]]:
+        logger.info("Fetching trades for user=%s limit=%s", user, limit)
         resp = await self._client.get("/trades", params={"user": user, "limit": limit})
         resp.raise_for_status()
         data = resp.json()
@@ -32,6 +33,7 @@ class DataAPIClient:
         return data if isinstance(data, list) else data.get("data", [])
 
     async def fetch_positions(self, user: str) -> List[Dict[str, Any]]:
+        logger.info("Fetching positions for user=%s", user)
         resp = await self._client.get("/positions", params={"user": user})
         resp.raise_for_status()
         data = resp.json()
@@ -42,7 +44,7 @@ class DataAPIClient:
         return data if isinstance(data, list) else data.get("data", [])
 
     async def fetch_book(self, asset_id: str) -> Dict[str, Any]:
-        resp = await self._client.get(f"/book/{asset_id}")
+        resp = await self._client.get("/book", params={"token_id": asset_id})
         resp.raise_for_status()
         return resp.json()
 

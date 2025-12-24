@@ -43,6 +43,11 @@ def setup_logging() -> None:
     root.setLevel(level)
     root.handlers.clear()
     root.addHandler(handler)
+    httpx_level = os.environ.get("HTTPX_LOG_LEVEL") or ("DEBUG" if os.environ.get("HTTPX_DEBUG") else None)
+    if httpx_level:
+        for name in ("httpx", "httpcore"):
+            logging.getLogger(name).setLevel(httpx_level.upper())
+            logging.getLogger(name).propagate = True
     log_path = Path(os.environ.get("LOG_FILE") or str(PROJECT_ROOT / "polycopy.log"))
     try:
         file_handler = logging.FileHandler(log_path)
