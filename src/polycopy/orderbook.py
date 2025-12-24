@@ -44,6 +44,7 @@ class OrderBookManager:
             timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
         )
         self._rest_fetch_ts: Dict[str, float] = {}
+        self._rest_inflight: Set[str] = set()
 
     async def update_from_ws(self, message: Dict) -> None:
         """Process WS message to update quotes."""
@@ -135,18 +136,25 @@ class OrderBookManager:
         now = time.time()
         async with self._lock:
             last_fetch = self._rest_fetch_ts.get(asset_id, 0)
+            if asset_id in self._rest_inflight:
+                return self._quotes.get(asset_id)
             if now - last_fetch < 1.0:
                 return self._quotes.get(asset_id)
-            self._rest_fetch_ts[asset_id] = now
+            self._rest_inflight.add(asset_id)
 
         try:
             resp = await self._rest_client.get("/book", params={"token_id": asset_id})
             resp.raise_for_status()
             data = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:  # noqa: BLE001
+        except (httpx.HTTPError, ValueError) as exc:
             logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
             async with self._lock:
+                self._rest_inflight.discard(asset_id)
                 return self._quotes.get(asset_id)
+        except Exception:
+            async with self._lock:
+                self._rest_inflight.discard(asset_id)
+            raise
 
         bids = data.get("bids") or []
         asks = data.get("asks") or []
@@ -171,6 +179,7 @@ class OrderBookManager:
         async with self._lock:
             self._quotes[asset_id] = quote
             self._rest_fetch_ts[asset_id] = time.time()
+            self._rest_inflight.discard(asset_id)
         logger.info("fetched rest orderbook for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
         return quote
 

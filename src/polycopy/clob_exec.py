@@ -33,13 +33,15 @@ class MarketStatusChecker:
             resp = await self._client.get(f"/markets/{market_id}")
             resp.raise_for_status()
             data = resp.json()
-            active = bool(data.get("active", True))
-            if "closed" in data:
-                active = not bool(data.get("closed"))
+            closed = data.get("closed")
+            if closed is not None:
+                active = not bool(closed)
+            else:
+                active = bool(data.get("active", True))
             self._cache[market_id] = (active, now)
             logger.debug("market status for %s active=%s", market_id, active)
             return active
-        except (httpx.HTTPError, ValueError) as exc:  # noqa: BLE001
+        except (httpx.HTTPError, ValueError) as exc:
             logger.debug("market status check failed for %s: %s", market_id, exc)
             return True
 
