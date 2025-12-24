@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 class MarketStatusChecker:
-    """Cache market active/closed state using the CLOB REST API."""
+    """Cache market active/closed state using the CLOB REST API.
+
+    Results are cached for ``ttl_seconds``. If the API call fails or
+    returns an unexpected payload, the checker defaults to treating the
+    market as active so that execution is not blocked by transient errors.
+    """
 
     def __init__(self, rest_url: str, ttl_seconds: float = 60.0) -> None:
         self._client = httpx.AsyncClient(

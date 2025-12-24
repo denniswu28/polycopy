@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 
 import httpx
 
@@ -44,7 +44,7 @@ class OrderBookManager:
             timeout=httpx.Timeout(5.0, connect=2.0, read=5.0, write=2.0),
         )
         self._rest_fetch_ts: Dict[str, float] = {}
-        self._rest_inflight: Set[str] = set()
+        self._rest_inflight: Dict[str, asyncio.Task[Optional[BestQuote]]] = {}
 
     async def update_from_ws(self, message: Dict) -> None:
         """Process WS message to update quotes."""
@@ -133,7 +133,7 @@ class OrderBookManager:
                 pass
 
     @staticmethod
-    def _extract_best_price(entries: list[dict]) -> float | None:
+    def _extract_best_price(entries: List[Dict[str, Any]]) -> float | None:
         for entry in entries:
             try:
                 price_val = entry.get("price")
@@ -148,25 +148,32 @@ class OrderBookManager:
         now = time.time()
         async with self._lock:
             last_fetch = self._rest_fetch_ts.get(asset_id, 0)
-            if asset_id in self._rest_inflight:
-                return self._quotes.get(asset_id)
+            inflight = self._rest_inflight.get(asset_id)
+            if inflight:
+                result = await inflight
+                return result if result is not None else self._quotes.get(asset_id)
             if now - last_fetch < 1.0:
                 return self._quotes.get(asset_id)
-            self._rest_inflight.add(asset_id)
+            task = asyncio.create_task(self._do_fetch_rest(asset_id))
+            self._rest_inflight[asset_id] = task
+        try:
+            result = await task
+            if result is None:
+                async with self._lock:
+                    return self._quotes.get(asset_id)
+            return result
+        finally:
+            async with self._lock:
+                self._rest_inflight.pop(asset_id, None)
 
+    async def _do_fetch_rest(self, asset_id: str) -> Optional[BestQuote]:
         try:
             resp = await self._rest_client.get("/book", params={"token_id": asset_id})
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
-            async with self._lock:
-                self._rest_inflight.discard(asset_id)
-                return self._quotes.get(asset_id)
-        except Exception:
-            async with self._lock:
-                self._rest_inflight.discard(asset_id)
-            raise
+            return None
 
         bids = data.get("bids") or []
         asks = data.get("asks") or []
