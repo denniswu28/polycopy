@@ -68,8 +68,8 @@ class OrderBookManager:
         bids = message.get("bids", [])
         asks = message.get("asks", [])
 
-        best_bid = float(bids[0]["price"]) if bids else None
-        best_ask = float(asks[0]["price"]) if asks else None
+        best_bid = self._extract_best_price(bids)
+        best_ask = self._extract_best_price(asks)
 
         try:
             ts = int(message.get("timestamp", 0))
@@ -132,6 +132,18 @@ class OrderBookManager:
             except (ValueError, TypeError):
                 pass
 
+    @staticmethod
+    def _extract_best_price(entries: list[dict]) -> float | None:
+        for entry in entries:
+            try:
+                price_val = entry.get("price")
+                if price_val is None:
+                    continue
+                return float(price_val)
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return None
+
     async def _refresh_from_rest(self, asset_id: str) -> Optional[BestQuote]:
         now = time.time()
         async with self._lock:
@@ -158,8 +170,8 @@ class OrderBookManager:
 
         bids = data.get("bids") or []
         asks = data.get("asks") or []
-        best_bid = float(bids[0]["price"]) if bids else None
-        best_ask = float(asks[0]["price"]) if asks else None
+        best_bid = self._extract_best_price(bids)
+        best_ask = self._extract_best_price(asks)
         tick_size = None
         try:
             tick_size_raw = data.get("tick_size")
