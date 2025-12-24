@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     trader_wallet: str = Field(..., description="Our own wallet address used for trading")
 
     data_api_url: str = "https://data-api.polymarket.com"
+    gamma_api_url: str = "https://gamma-api.polymarket.com"
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     clob_rest_url: str = "https://clob.polymarket.com"
     signature_type: int = Field(
@@ -61,6 +62,7 @@ class Settings(BaseSettings):
         env_file=(".env", PROJECT_ROOT / ".env"),
         env_prefix="",
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     @field_validator("copy_factor")

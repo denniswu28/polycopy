@@ -11,8 +11,10 @@ try:
 except ImportError:  # pragma: no cover
     uvloop = None
 
+from dotenv import load_dotenv
+
 from .clob_exec import ExecutionEngine, MarketStatusChecker
-from .config import Settings, load_settings
+from .config import PROJECT_ROOT, Settings, load_settings
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
 from .live_shared import LiveViewWriter
@@ -20,7 +22,7 @@ from .market_client import MarketBookClient
 from .orderbook import OrderBookManager
 from .reconcile import reconcile_loop
 from .recorders import TargetCsvRecorder
-from .risk import RiskLimits
+from .risk import RiskLimits, RiskError
 from .rtds_client import RtdsClient
 from .state import IntentStore, PositionTracker, PortfolioState
 from .util import get_first
@@ -119,6 +121,11 @@ async def process_event(
         await recorder.record_trade(event)
 
     market = event.get("market") or ""
+    if market and executor.market_status_checker:
+        if not await executor.market_status_checker.is_active(market):
+            logger.debug("ignoring event for closed market %s", market)
+            return
+
     outcome = event.get("outcome") or ""
     price_val = event.get("price")
     try:
@@ -180,7 +187,11 @@ async def process_event(
     _, our_state = await position_tracker.snapshot()
     mid_prices: Dict[str, float] = {}
     if orderbook_manager:
-        for aid in our_state.positions.keys():
+        # Create a list of keys to iterate over to avoid "dictionary changed size during iteration"
+        # if our_state.positions is modified concurrently (though snapshot should return a copy or be safe)
+        # PositionTracker.snapshot returns deepcopy of states, so it should be safe, but let's be defensive.
+        asset_ids = list(our_state.positions.keys())
+        for aid in asset_ids:
             mp = await orderbook_manager.get_mid_price(aid)
             if mp is not None:
                 mid_prices[aid] = mp
@@ -252,6 +263,9 @@ async def consume_events(
                 live_view=live_view,
             )
             failures = 0
+        except RiskError as exc:
+            logger.warning("risk check failed: %s", exc)
+            # Do not increment failures for risk errors (e.g. min trade size)
         except Exception as exc:  # noqa: BLE001
             failures += 1
             logger.warning("processing failed (%s failures): %s", failures, exc)
@@ -267,6 +281,7 @@ async def refresh_watchlist(
     interval: float,
     stop_event: asyncio.Event,
     orderbook_manager: OrderBookManager,
+    market_status_checker: MarketStatusChecker | None = None,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -275,6 +290,12 @@ async def refresh_watchlist(
             for pos in positions:
                 market = get_first(pos, ["market", "market_slug", "event_slug", "eventSlug", "slug"])
                 asset_id = pos.get("asset_id")
+
+                if market and market_status_checker:
+                    if not await market_status_checker.is_active(market):
+                        logger.debug("skipping closed market %s", market)
+                        continue
+
                 if market:
                     watchlist.add(market)
                 if asset_id:
@@ -290,6 +311,7 @@ async def refresh_watchlist(
 async def main_async(argv: list[str] | None = None) -> None:
     if uvloop:
         uvloop.install()
+    load_dotenv(PROJECT_ROOT / ".env")
     log_util.setup_logging()
     settings, args = load_settings(argv)
     ensure_api_credentials(settings)
@@ -305,7 +327,7 @@ async def main_async(argv: list[str] | None = None) -> None:
     data_api = DataAPIClient(settings.data_api_url, settings.api_key)  # type: ignore[arg-type]
     risk_limits = RiskLimits.from_settings(settings)
     intent_store = IntentStore(settings.db_path)
-    market_status_checker = MarketStatusChecker(settings.clob_rest_url)
+    market_status_checker = MarketStatusChecker(settings.gamma_api_url)
     executor = ExecutionEngine(
         rest_url=settings.clob_rest_url,
         api_key=settings.api_key,  # type: ignore[arg-type]
@@ -405,6 +427,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 interval=settings.watchlist_refresh_interval,
                 stop_event=stop_event,
                 orderbook_manager=orderbook_manager,
+                market_status_checker=market_status_checker,
             ),
             name="watchlist",
         ),

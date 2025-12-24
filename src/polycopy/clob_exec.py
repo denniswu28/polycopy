@@ -35,9 +35,23 @@ class MarketStatusChecker:
         if cached and (now - cached[1]) < self._ttl:
             return cached[0]
         try:
-            resp = await self._client.get(f"/markets/{market_id}")
-            resp.raise_for_status()
-            data = resp.json()
+            if market_id.isdigit():
+                resp = await self._client.get(f"/markets/{market_id}")
+                resp.raise_for_status()
+                data = resp.json()
+            else:
+                # Assume slug
+                resp = await self._client.get("/markets", params={"slug": market_id})
+                resp.raise_for_status()
+                results = resp.json()
+                if not results or not isinstance(results, list):
+                    # If slug not found, default to active to avoid blocking?
+                    # Or default to inactive?
+                    # If we can't find it, we probably shouldn't trade.
+                    logger.warning("market not found for slug %s", market_id)
+                    return False
+                data = results[0]
+
             closed = data.get("closed")
             if closed is not None:
                 active = not bool(closed)

@@ -21,7 +21,7 @@ class MarketBookClient:
         self,
         url: str,
         orderbook_manager: OrderBookManager,
-        heartbeat_interval: float = 15.0,
+        heartbeat_interval: float = 10.0,
         backoff_seconds: float = 5.0,
     ) -> None:
         self.url = url
@@ -83,8 +83,8 @@ class MarketBookClient:
     async def _heartbeat_loop(self) -> None:
         while self._running and self._ws:
             try:
-                await self._ws.send("PING")
                 await asyncio.sleep(self.heartbeat_interval)
+                await self._ws.send("PING")
             except Exception:
                 break
 
@@ -103,10 +103,10 @@ class MarketBookClient:
                     chunk_size = 50
                     for i in range(0, len(new_subs_list), chunk_size):
                         chunk = new_subs_list[i : i + chunk_size]
-                        # Initial connection expects type="market"; follow-up additions
+                        # Initial connection expects type="MARKET"; follow-up additions
                         # use the documented dynamic subscribe format.
                         if not last_subs:
-                            msg = {"assets_ids": chunk, "type": "market"}
+                            msg = {"assets_ids": chunk, "type": "MARKET"}
                         else:
                             msg = {"assets_ids": chunk, "operation": "subscribe"}
                         await self._ws.send(json.dumps(msg))

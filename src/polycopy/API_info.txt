@@ -1,24 +1,32 @@
-Here is the API documentation formatted for optimal LLM ingestion. It utilizes structured Markdown, explicit type definitions, and JSON schemas to maximize parsing accuracy.
+````markdown
+# Polymarket Unified API Specification (LLM-Optimized)
 
-# Polymarket CLOB API Documentation
+Normalized + deduplicated. Schema-first. TypeScript signatures use the official CLOB client docs.
+(Where Python differs, expect snake_case variants in `py-clob-client`.)
 
-## Base Information
+---
 
-- **REST Host:** https://clob.polymarket.com  
-- **WSS Host:** wss://ws-subscriptions-clob.polymarket.com
+## GLOBAL ENDPOINTS
+
+REST_BASE_URL = "https://clob.polymarket.com"
+WSS_CLOB_URL  = "wss://ws-subscriptions-clob.polymarket.com"
+WSS_RTDS_URL  = "wss://ws-live-data.polymarket.com"
+
+CHAIN_ID = 137
 
 ---
 
 ## 1. REST API
 
-### GET /book
-Retrieves the order book summary for a specific token.
+### 1.1 GET /book
 
-**Query Parameters**
-- `token_id` (string, required): The unique identifier for the token (Asset ID).
+PURPOSE:
+Retrieve Level-2 order book snapshot for a single token (asset).
 
-**Response Schema (200 OK)**
+QUERY:
+- token_id: string (required)
 
+RESPONSE (200 OK):
 ```json
 {
   "market": "string",
@@ -35,22 +43,28 @@ Retrieves the order book summary for a specific token.
   "tick_size": "string",
   "neg_risk": "boolean"
 }
-```
+````
 
 ---
 
-## 2. WebSocket (WSS) Overview
+## 2. CLOB WEBSOCKET (WSS)
 
-### Connection & Authentication
-- **User Channel:** Requires authentication  
-- **Market Channel:** Public
+### 2.1 Connection Rules
 
-**Subscription Message**
+* Transport: WebSocket (JSON)
+* Ping: client sends `"PING"` every 10s
+* Channels:
+
+  * `market` (public)
+  * `user` (authenticated)
+
+### 2.2 Initial Subscription Payload (send immediately after connect)
+
 ```json
 {
-  "type": "string",
-  "assets_ids": ["string"],
-  "markets": ["string"],
+  "type": "USER | MARKET",
+  "assets_ids": ["string"],     // required for MARKET
+  "markets": ["string"],        // required for USER
   "auth": {
     "apiKey": "string",
     "secret": "string",
@@ -59,19 +73,21 @@ Retrieves the order book summary for a specific token.
 }
 ```
 
-**Dynamic Subscription (Market Channel)**
+### 2.3 Dynamic Market Subscription (after connection)
+
 ```json
 {
   "assets_ids": ["string"],
-  "operation": "subscribe"
+  "operation": "subscribe | unsubscribe"
 }
 ```
 
 ---
 
-## 3. WSS Channel: user (Authenticated)
+## 3. WSS USER CHANNEL (Authenticated)
 
-### Message Type: trade
+### 3.1 Message: trade
+
 ```json
 {
   "event_type": "trade",
@@ -82,8 +98,8 @@ Retrieves the order book summary for a specific token.
   "outcome": "string",
   "price": "string",
   "size": "string",
-  "side": "string",
-  "status": "string",
+  "side": "BUY | SELL",
+  "status": "MATCHED | MINED | CONFIRMED | FAILED",
   "timestamp": "string",
   "matchtime": "string",
   "owner": "string",
@@ -102,18 +118,19 @@ Retrieves the order book summary for a specific token.
 }
 ```
 
-### Message Type: order
+### 3.2 Message: order
+
 ```json
 {
   "event_type": "order",
-  "type": "string",
+  "type": "PLACEMENT | UPDATE | CANCELLATION",
   "id": "string",
   "asset_id": "string",
   "market": "string",
   "price": "string",
   "original_size": "string",
   "size_matched": "string",
-  "side": "string",
+  "side": "BUY | SELL",
   "outcome": "string",
   "owner": "string",
   "order_owner": "string",
@@ -124,9 +141,10 @@ Retrieves the order book summary for a specific token.
 
 ---
 
-## 4. WSS Channel: market (Public)
+## 4. WSS MARKET CHANNEL (Public)
 
-### Message Type: book
+### 4.1 Message: book (snapshot + updates)
+
 ```json
 {
   "event_type": "book",
@@ -139,7 +157,8 @@ Retrieves the order book summary for a specific token.
 }
 ```
 
-### Message Type: price_change
+### 4.2 Message: price_change
+
 ```json
 {
   "event_type": "price_change",
@@ -150,7 +169,7 @@ Retrieves the order book summary for a specific token.
       "asset_id": "string",
       "price": "string",
       "size": "string",
-      "side": "string",
+      "side": "BUY | SELL",
       "hash": "string",
       "best_bid": "string",
       "best_ask": "string"
@@ -159,7 +178,8 @@ Retrieves the order book summary for a specific token.
 }
 ```
 
-### Message Type: tick_size_change
+### 4.3 Message: tick_size_change
+
 ```json
 {
   "event_type": "tick_size_change",
@@ -171,7 +191,8 @@ Retrieves the order book summary for a specific token.
 }
 ```
 
-### Message Type: last_trade_price
+### 4.4 Message: last_trade_price
+
 ```json
 {
   "event_type": "last_trade_price",
@@ -179,7 +200,7 @@ Retrieves the order book summary for a specific token.
   "market": "string",
   "price": "string",
   "size": "string",
-  "side": "string",
+  "side": "BUY | SELL",
   "timestamp": "string",
   "fee_rate_bps": "string"
 }
@@ -187,36 +208,504 @@ Retrieves the order book summary for a specific token.
 
 ---
 
-## 5. Implementation Reference (Python)
+## 5. PYTHON AUTH BOOTSTRAP (L1 -> derive API creds)
 
 ```python
 from py_clob_client.client import ClobClient
 
-host = "https://clob.polymarket.com"
-key = "YOUR_PRIVATE_KEY"
-chain_id = 137
+client = ClobClient(
+    host="https://clob.polymarket.com",
+    key="PRIVATE_KEY",
+    chain_id=137,
+    signature_type=1
+)
 
-client = ClobClient(host, key=key, chain_id=chain_id, signature_type=1)
 api_creds = client.derive_api_key()
+# {"apiKey": "...", "secret": "...", "passphrase": "..."}
 ```
 
 ---
 
-## 6. Client Public Methods (No Auth Required)
+## 6. CLIENT PUBLIC METHODS (NO AUTH REQUIRED)
 
-### Initialization
-```python
+Source: [https://docs.polymarket.com/developers/CLOB/clients/methods-public](https://docs.polymarket.com/developers/CLOB/clients/methods-public)
+
+### 6.0 Public Client Initialization
+
+TypeScript:
+
+```ts
+import { ClobClient } from "@polymarket/clob-client";
+
+const client = new ClobClient("https://clob.polymarket.com", 137);
+```
+
+Python:
+
+```py
 from py_clob_client.client import ClobClient
+
 client = ClobClient(host="https://clob.polymarket.com", chain_id=137)
 ```
 
-(Methods, interfaces, schemas, and tables preserved exactly as provided.)
+---
+
+## 6.A Shared Types (Public Methods)
+
+### 6.A.1 Enums
+
+```ts
+enum Side {
+  BUY = "BUY",
+  SELL = "SELL",
+}
+
+enum OrderType {
+  GTC = "GTC",  // Good Till Cancelled
+  FOK = "FOK",  // Fill or Kill
+  GTD = "GTD",  // Good Till Date
+  FAK = "FAK",  // Fill and Kill
+}
+
+type TickSize = "0.1" | "0.01" | "0.001" | "0.0001";
+```
+
+### 6.A.2 Market Types
+
+```ts
+interface MarketToken {
+  outcome: string;
+  price: number;
+  token_id: string;
+  winner: boolean;
+}
+
+interface Market {
+  accepting_order_timestamp: string | null;
+  accepting_orders: boolean;
+  active: boolean;
+  archived: boolean;
+  closed: boolean;
+  condition_id: string;
+  description: string;
+  enable_order_book: boolean;
+  end_date_iso: string;
+  fpmm: string;
+  game_start_time: string;
+  icon: string;
+  image: string;
+  is_50_50_outcome: boolean;
+  maker_base_fee: number;
+  market_slug: string;
+  minimum_order_size: number;
+  minimum_tick_size: number;
+  neg_risk: boolean;
+  neg_risk_market_id: string;
+  neg_risk_request_id: string;
+  notifications_enabled: boolean;
+  question: string;
+  question_id: string;
+  rewards: {
+    max_spread: number;
+    min_size: number;
+    rates: any | null;
+  };
+  seconds_delay: number;
+  tags: string[];
+  taker_base_fee: number;
+  tokens: MarketToken[];
+}
+
+interface SimplifiedToken {
+  outcome: string;
+  price: number;
+  token_id: string;
+}
+
+interface SimplifiedMarket {
+  accepting_orders: boolean;
+  active: boolean;
+  archived: boolean;
+  closed: boolean;
+  condition_id: string;
+  rewards: {
+    rates: any | null;
+    min_size: number;
+    max_spread: number;
+  };
+  tokens: SimplifiedToken[];
+}
+
+interface PaginationPayload<T = any> {
+  limit: number;
+  count: number;
+  data: T[];
+}
+```
+
+### 6.A.3 Orderbook / Pricing Types
+
+```ts
+interface OrderSummary {
+  price: string;
+  size: string;
+}
+
+interface OrderBookSummary {
+  market: string;
+  asset_id: string;
+  timestamp: string;
+  bids: OrderSummary[];
+  asks: OrderSummary[];
+  min_order_size: string;
+  tick_size: string;
+  neg_risk: boolean;
+  hash: string;
+}
+
+interface BookParams {
+  token_id: string;
+  side: Side; // sometimes ignored depending on endpoint (see method notes)
+}
+
+interface TokenPrices {
+  BUY?: string;
+  SELL?: string;
+}
+
+type PricesResponse = { [tokenId: string]: TokenPrices };
+
+interface SpreadResponse {
+  spread: string;
+}
+
+type SpreadsResponse = { [tokenId: string]: string };
+```
+
+### 6.A.4 Price History Types
+
+```ts
+enum PriceHistoryInterval {
+  MAX = "max",
+  ONE_WEEK = "1w",
+  ONE_DAY = "1d",
+  SIX_HOURS = "6h",
+  ONE_HOUR = "1h",
+}
+
+interface PriceHistoryFilterParams {
+  market: string; // tokenID
+  startTs?: number;
+  endTs?: number;
+  fidelity?: number;
+  interval: PriceHistoryInterval;
+}
+
+interface MarketPrice {
+  t: number; // timestamp
+  p: number; // price
+}
+```
+
+### 6.A.5 Trades Types
+
+```ts
+interface LastTradePrice {
+  price: string;
+  side: string;
+}
+
+interface LastTradePriceWithToken {
+  price: string;
+  side: string;
+  token_id: string;
+}
+
+interface MarketTradeEvent {
+  event_type: string;
+  market: {
+    condition_id: string;
+    asset_id: string;
+    question: string;
+    icon: string;
+    slug: string;
+  };
+  user: {
+    address: string;
+    username: string;
+    profile_picture: string;
+    optimized_profile_picture: string;
+    pseudonym: string;
+  };
+  side: Side;
+  size: string;
+  fee_rate_bps: string;
+  price: string;
+  outcome: string;
+  outcome_index: number;
+  transaction_hash: string;
+  timestamp: string;
+}
+```
 
 ---
 
-## 7. Real Time Data Socket (RTDS)
+## 6.B Public Methods List (ALL from methods-public)
 
-### Message Envelope
+### 6.B.1 Health Check
+
+**getOk()**
+
+```ts
+async getOk(): Promise<any>
+```
+
+---
+
+### 6.B.2 Markets
+
+**getMarket(conditionId)**
+
+```ts
+async getMarket(conditionId: string): Promise<Market>
+```
+
+**getMarkets()**
+
+```ts
+async getMarkets(): Promise<PaginationPayload<Market>>
+```
+
+example:
+
+import os
+
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import ApiCreds
+from dotenv import load_dotenv
+from py_clob_client.constants import AMOY
+
+load_dotenv()
+
+
+def main():
+    host = os.getenv("CLOB_API_URL", "https://clob.polymarket.com")
+    key = os.getenv("PK")
+    creds = ApiCreds(
+        api_key=os.getenv("CLOB_API_KEY"),
+        api_secret=os.getenv("CLOB_SECRET"),
+        api_passphrase=os.getenv("CLOB_PASS_PHRASE"),
+    )
+    chain_id = AMOY
+    client = ClobClient(host, key=key, chain_id=chain_id, creds=creds)
+
+    print(client.get_markets())
+    print(client.get_simplified_markets())
+    print(client.get_sampling_markets())
+    print(client.get_sampling_simplified_markets())
+    print(client.get_market("condition_id"))
+
+    print("Done!")
+
+
+main()
+
+
+**getSimplifiedMarkets()**
+
+```ts
+async getSimplifiedMarkets(): Promise<PaginationPayload<SimplifiedMarket>>
+```
+
+**getSamplingMarkets()**
+
+```ts
+async getSamplingMarkets(): Promise<PaginationPayload<Market>>
+```
+
+**getSamplingSimplifiedMarkets()**
+
+```ts
+async getSamplingSimplifiedMarkets(): Promise<PaginationPayload<SimplifiedMarket>>
+```
+
+---
+
+### 6.B.3 Order Books & Prices
+
+**calculateMarketPrice(tokenID, side, amount, orderType=FOK)**
+
+```ts
+async calculateMarketPrice(
+  tokenID: string,
+  side: Side,
+  amount: number,
+  orderType: OrderType = OrderType.FOK
+): Promise<number>
+// returns: number (calculated market price)
+```
+
+**getOrderBook(tokenID)**
+
+```ts
+async getOrderBook(tokenID: string): Promise<OrderBookSummary>
+```
+
+**getOrderBooks(params: BookParams[])**
+
+```ts
+async getOrderBooks(params: BookParams[]): Promise<OrderBookSummary[]>
+```
+
+**getPrice(tokenID, side)**
+
+```ts
+async getPrice(tokenID: string, side: "BUY" | "SELL"): Promise<{ price: string }>
+```
+
+**getPrices(params: BookParams[])**
+
+```ts
+async getPrices(params: BookParams[]): Promise<PricesResponse>
+```
+example:
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import BookParams
+
+
+def main():
+    host = os.getenv("CLOB_API_URL", "https://clob.polymarket.com")
+    client = ClobClient(host)
+
+    resp = client.get_prices(
+        params=[
+            BookParams(
+                token_id="71321045679252212594626385532706912750332728571942532289631379312455583992563",
+                side="BUY",
+            ),
+            BookParams(
+                token_id="71321045679252212594626385532706912750332728571942532289631379312455583992563",
+                side="SELL",
+            ),
+            BookParams(
+                token_id="52114319501245915516055106046884209969926127482827954674443846427813813222426",
+                side="BUY",
+            ),
+            BookParams(
+                token_id="52114319501245915516055106046884209969926127482827954674443846427813813222426",
+                side="SELL",
+            ),
+        ]
+    )
+    print(resp)
+    print("Done!")
+
+
+main()
+
+
+**getMidpoint(tokenID)**
+
+```ts
+async getMidpoint(tokenID: string): Promise<{ mid: string }>
+```
+
+**getMidpoints(params: BookParams[])**
+NOTE: docs state `side` is ignored for this call (still part of BookParams).
+
+```ts
+async getMidpoints(params: BookParams[]): Promise<{ [tokenId: string]: string }>
+```
+
+**getSpread(tokenID)**
+
+```ts
+async getSpread(tokenID: string): Promise<SpreadResponse>
+```
+
+**getSpreads(params: BookParams[])**
+
+```ts
+async getSpreads(params: BookParams[]): Promise<SpreadsResponse>
+```
+
+**getPricesHistory(params: PriceHistoryFilterParams)**
+
+```ts
+async getPricesHistory(params: PriceHistoryFilterParams): Promise<MarketPrice[]>
+```
+
+---
+
+### 6.B.4 Trades
+
+**getLastTradePrice(tokenID)**
+
+```ts
+async getLastTradePrice(tokenID: string): Promise<LastTradePrice>
+```
+
+**getLastTradesPrices(params: BookParams[])**
+
+```ts
+async getLastTradesPrices(params: BookParams[]): Promise<LastTradePriceWithToken[]>
+```
+
+**getMarketTradesEvents(conditionID)**
+
+```ts
+async getMarketTradesEvents(conditionID: string): Promise<MarketTradeEvent[]>
+```
+
+---
+
+### 6.B.5 Market Parameters
+
+**getFeeRateBps(tokenID)**
+
+```ts
+async getFeeRateBps(tokenID: string): Promise<number>
+```
+
+**getTickSize(tokenID)**
+
+```ts
+async getTickSize(tokenID: string): Promise<TickSize>
+```
+
+**getNegRisk(tokenID)**
+
+```ts
+async getNegRisk(tokenID: string): Promise<boolean>
+```
+
+---
+
+### 6.B.6 Time & Server Info
+
+**getServerTime()**
+
+```ts
+async getServerTime(): Promise<number>
+// returns: Unix timestamp in seconds
+```
+
+---
+
+## 7. REAL TIME DATA SOCKET (RTDS)
+
+### 7.1 Connection & Auth
+
+* WSS Host: `wss://ws-live-data.polymarket.com`
+* Protocol: WebSocket (JSON)
+* Ping/Pong: Client must send `"PING"` every ~5 seconds.
+* Authentication types:
+
+  * CLOB Auth (API Key/Secret/Passphrase) for trading topics
+  * Gamma Auth (Wallet Address) for user-specific non-trading topics
+
+### 7.2 Message Envelope (ALL INCOMING EVENTS)
+
 ```json
 {
   "topic": "string",
@@ -226,10 +715,11 @@ client = ClobClient(host="https://clob.polymarket.com", chain_id=137)
 }
 ```
 
-### Subscription Payload
+### 7.3 Subscription Command
+
 ```json
 {
-  "action": "subscribe",
+  "action": "subscribe | unsubscribe",
   "subscriptions": [
     {
       "topic": "topic_name",
@@ -248,5 +738,194 @@ client = ClobClient(host="https://clob.polymarket.com", chain_id=137)
 }
 ```
 
-(All RTDS topics, schemas, and examples included verbatim.)
+### 7.4 Public Topics & Schemas
 
+#### Topic: activity — Type: trade
+
+```json
+{
+  "asset": "string",
+  "conditionId": "string",
+  "side": "BUY | SELL",
+  "size": "integer",
+  "price": "float",
+  "timestamp": "integer",
+  "transactionHash": "string",
+  "outcome": "string",
+  "outcomeIndex": "integer",
+  "slug": "string",
+  "title": "string",
+  "user": {
+    "name": "string",
+    "pseudonym": "string",
+    "profileImage": "string",
+    "proxyWallet": "string",
+    "bio": "string"
+  }
+}
+```
+
+#### Topic: crypto_prices — Type: price_change (implied)
+
+Filters: `{"symbol":"BTCUSDT"}`, etc.
+
+```json
+{
+  "symbol": "string",
+  "value": "number",
+  "timestamp": "number"
+}
+```
+
+#### Topic: equity_prices — same schema as crypto_prices
+
+#### Topic: comments — Type: comment / reaction
+
+```json
+{
+  "id": "string",
+  "body": "string",
+  "userAddress": "string",
+  "parentEntityID": "number",
+  "createdAt": "string",
+  "replyAddress": "string"
+}
+```
+
+```json
+{
+  "id": "string",
+  "commentID": "number",
+  "reactionType": "string",
+  "userAddress": "string"
+}
+```
+
+### 7.5 Trading Topics (CLOB)
+
+#### Topic: clob_market — Type: price_change (compact form)
+
+Requires filters: ["token_id_1", ...]
+
+```json
+{
+  "m": "string",
+  "t": "string",
+  "pc": [
+    {
+      "a": "string",
+      "p": "string",
+      "si": "string",
+      "s": "string",
+      "ba": "string",
+      "bb": "string",
+      "h": "string"
+    }
+  ]
+}
+```
+
+#### Topic: clob_market — Type: orderbook (AggOrderbook)
+
+```json
+{
+  "market": "string",
+  "asset_id": "string",
+  "bids": [{ "price": "string", "size": "string" }],
+  "asks": [{ "price": "string", "size": "string" }],
+  "hash": "string",
+  "timestamp": "string"
+}
+```
+
+#### Topic: clob_market — Type: last_trade_price
+
+```json
+{
+  "market": "string",
+  "asset_id": "string",
+  "price": "string",
+  "size": "string",
+  "side": "BUY | SELL"
+}
+```
+
+#### Topic: clob_market — Type: tick_size_change
+
+```json
+{
+  "market": "string",
+  "asset_id": "string",
+  "old_tick_size": "string",
+  "new_tick_size": "string"
+}
+```
+
+#### Topic: clob_user (Auth Required) — Type: order
+
+```json
+{
+  "id": "string",
+  "market": "string",
+  "asset_id": "string",
+  "price": "string",
+  "size_matched": "string",
+  "original_size": "string",
+  "side": "BUY | SELL",
+  "status": "string",
+  "type": "PLACEMENT | CANCELLATION | FILL",
+  "outcome": "YES | NO"
+}
+```
+
+#### Topic: clob_user (Auth Required) — Type: trade
+
+```json
+{
+  "id": "string",
+  "market": "string",
+  "asset_id": "string",
+  "price": "string",
+  "size": "string",
+  "side": "BUY | SELL",
+  "transaction_hash": "string",
+  "maker_orders": [
+    {
+      "order_id": "string",
+      "matched_amount": "string",
+      "price": "string"
+    }
+  ]
+}
+```
+
+#### Topic: rfq — Type: request / quote
+
+```json
+{
+  "requestId": "string",
+  "market": "string",
+  "token": "string",
+  "side": "string",
+  "sizeIn": "number",
+  "sizeOut": "number",
+  "expiry": "number"
+}
+```
+
+```json
+{
+  "quoteId": "string",
+  "requestId": "string",
+  "price": "number",
+  "sizeIn": "number",
+  "sizeOut": "number"
+}
+```
+
+---
+
+END OF SPEC
+
+```
+```

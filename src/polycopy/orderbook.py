@@ -171,6 +171,13 @@ class OrderBookManager:
             resp = await self._rest_client.get("/book", params={"token_id": asset_id})
             resp.raise_for_status()
             data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # Market likely not on CLOB (AMM-only or closed)
+                logger.debug("orderbook not found on CLOB for %s (404)", asset_id)
+                return None
+            logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
+            return None
         except (httpx.HTTPError, ValueError) as exc:
             logger.debug("rest orderbook fetch failed for %s: %s", asset_id, exc)
             return None
@@ -301,3 +308,16 @@ class OrderBookManager:
 
     async def close(self) -> None:
         await self._rest_client.aclose()
+
+    async def fetch_price(self, asset_id: str, side: str) -> Optional[float]:
+        """Fetch price from CLOB API (GET /price)."""
+        try:
+            resp = await self._rest_client.get("/price", params={"token_id": asset_id, "side": side.upper()})
+            resp.raise_for_status()
+            data = resp.json()
+            price_str = data.get("price")
+            if price_str:
+                return float(price_str)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("fetch_price failed for %s %s: %s", asset_id, side, exc)
+        return None

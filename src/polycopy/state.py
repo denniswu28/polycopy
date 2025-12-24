@@ -148,7 +148,9 @@ class PositionTracker:
 
     async def snapshot(self) -> tuple[PortfolioState, PortfolioState]:
         async with self._lock:
-            return self.target, self.ours
+            # Return deep copies to avoid concurrency issues
+            import copy
+            return copy.deepcopy(self.target), copy.deepcopy(self.ours)
 
 
 class IntentStore:
