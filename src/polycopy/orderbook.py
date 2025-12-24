@@ -133,7 +133,7 @@ class OrderBookManager:
                 pass
 
     @staticmethod
-    def _extract_best_price(entries: List[Dict[str, Any]]) -> float | None:
+    def _extract_best_price(entries: List[Dict[str, Any]]) -> Optional[float]:
         for entry in entries:
             try:
                 price_val = entry.get("price")
@@ -198,7 +198,7 @@ class OrderBookManager:
         async with self._lock:
             self._quotes[asset_id] = quote
             self._rest_fetch_ts[asset_id] = time.time()
-            self._rest_inflight.discard(asset_id)
+            self._rest_inflight.pop(asset_id, None)
         logger.info("fetched rest orderbook for %s bid=%s ask=%s", asset_id, best_bid, best_ask)
         return quote
 
