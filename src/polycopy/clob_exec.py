@@ -45,8 +45,6 @@ class MarketStatusChecker:
 
     async def close(self) -> None:
         await self._client.aclose()
-        if self.market_status_checker:
-            await self.market_status_checker.close()
 
 
 class ExecutionEngine:
@@ -85,6 +83,8 @@ class ExecutionEngine:
 
     async def close(self) -> None:
         await self._client.aclose()
+        if self.market_status_checker:
+            await self.market_status_checker.close()
 
     async def _submit(self, order: Dict[str, Any]) -> Dict[str, Any]:
         resp = await self._client.post("/orders", json=order)
