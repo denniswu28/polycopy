@@ -18,6 +18,7 @@ from .clob_exec import ExecutionEngine, MarketStatusChecker
 from .config import PROJECT_ROOT, Settings, load_settings, MARKET_STATUS_TTL_MULTIPLIER
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
+from .events import normalize_side
 from .live_shared import LiveViewWriter
 from .market_client import MarketBookClient
 from .orderbook import OrderBookManager
@@ -114,12 +115,11 @@ async def _mark_event_seen(
 
 
 def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
-    side_field = (event.get("side") or "").lower()
-    is_buy = event.get("is_buy")
-    if isinstance(is_buy, bool):
-        return size if is_buy else -size
-    if side_field in {"buy", "sell"}:
-        return size if side_field == "buy" else -size
+    side = normalize_side(event)
+    if side == "buy":
+        return size
+    if side == "sell":
+        return -size
     if size < 0:
         # Some feeds encode sells as negative sizes even without an explicit side flag.
         return size

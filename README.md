@@ -8,7 +8,7 @@ Polycopy is a fail-fast, resilient MVP bot that mirrors a target trader’s posi
   - **RTDS WebSocket** (`activity/trades`) for fast detection with heartbeat, backoff, and circuit breaker.
   - **HTTP backstop** polls `/trades?user=<target>` every second (configurable) with high-watermark dedupe.
 - **State & dedupe**: Positions cached in memory; intents stored in SQLite for idempotent order submission (target_tx_hash + intent key).
-- **Risk & execution**: COPY_FACTOR scaling, per-trade/market/portfolio notional caps, blacklists, min size, and optional slippage cap. Execution posts marketable limit orders through the CLOB REST API (dry-run/paper modes available).
+- **Risk & execution**: COPY_FACTOR scaling, per-trade/market/portfolio notional caps, blacklists, min size/notional floors, and optional slippage cap. Execution posts marketable limit orders through the CLOB REST API (dry-run/paper modes available).
 - **Reconciliation**: Periodic full position refresh (default 30s) corrects drift.
 - **Ops**: Structured JSON logs, bounded queues, kill switch on repeated failures.
 
@@ -41,8 +41,9 @@ See `.env.example` for required keys. Notable settings:
 - `SIGNATURE_TYPE` controls CLOB signing: `1` for Email/Magic proxy (default), `2` for Web3 browser wallets (Metamask/Coinbase, etc.).
 - `COPY_FACTOR` (0–1) scales target sizes.
 - `HTTP_POLL_INTERVAL`, `RECONCILE_INTERVAL`, `QUEUE_MAXSIZE`.
-- Risk caps: `MAX_NOTIONAL_PER_TRADE`, `MAX_NOTIONAL_PER_MARKET`, `MAX_PORTFOLIO_EXPOSURE`, `MIN_TRADE_SIZE`, `SLIPPAGE_BPS`.
+- Risk caps: `MAX_NOTIONAL_PER_TRADE`, `MAX_NOTIONAL_PER_MARKET`, `MAX_PORTFOLIO_EXPOSURE`, `MIN_TRADE_SIZE`, `MIN_MARKET_ORDER_NOTIONAL`, `SLIPPAGE_BPS`.
 - Blacklists: comma-separated `BLACKLIST_MARKETS`, `BLACKLIST_OUTCOMES`.
+- Optional limit price caps: `BUY_LIMIT_PRICE`, `SELL_LIMIT_PRICE`.
 
 ## Fail-fast philosophy
 - Startup exits non-zero if required env vars are missing, Data-API is unreachable, or clock skew is excessive.

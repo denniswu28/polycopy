@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Optional
 
 import httpx
-
-
-def utcnow_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def monotonic_ms() -> int:
-    return int(time.monotonic() * 1000)
-
 
 async def check_clock_skew(reference_url: str = "https://worldtimeapi.org/api/timezone/Etc/UTC") -> Optional[float]:
     """Return clock skew in seconds (positive if local is ahead)."""
@@ -29,11 +19,3 @@ async def check_clock_skew(reference_url: str = "https://worldtimeapi.org/api/ti
             return time.time() - float(server_ts)
     except Exception:
         return None
-
-
-async def sleep_cancellable(delay: float) -> None:
-    """Sleep with cancellation handling."""
-    try:
-        await asyncio.sleep(delay)
-    except asyncio.CancelledError:
-        raise

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import ClassVar, List, Optional
-import json
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,7 +35,7 @@ class Settings(BaseSettings):
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     clob_rest_url: str = "https://clob.polymarket.com"
     signature_type: int = Field(
-        2, description="Signature type for CLOB auth (1=Magic/email, 2=Web3 browser wallet)"
+        1, description="Signature type for CLOB auth (1=Magic/email, 2=Web3 browser wallet)"
     )
     chain_id: int = 137
 
@@ -51,6 +50,8 @@ class Settings(BaseSettings):
     max_notional_per_trade: float = 250.0
     max_notional_per_market: float = 1000.0
     max_portfolio_exposure: float = 5000.0
+    min_trade_size: float = SYSTEM_MIN_LIMIT_QTY
+    min_market_order_notional: float = SYSTEM_MIN_MARKET_NOTIONAL
     buy_limit_price: float = 1.0
     sell_limit_price: float = 0.0
     slippage_bps: int = 50
