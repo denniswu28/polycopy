@@ -4,7 +4,7 @@ import asyncio
 import logging
 import signal
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Awaitable, Callable, Dict
 import json
 import httpx
 try:
@@ -34,6 +34,83 @@ from py_clob_client.exceptions import PolyException
 logger = logging.getLogger(__name__)
 # Limit initial trade CSV backfill to a manageable batch to avoid large downloads on startup.
 INITIAL_TRADE_LOG_LIMIT = 200
+EVENT_INTENT_PREFIX = "event"
+
+
+def _normalize_timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts > 1e15:
+        return ts / 1e9
+    if ts > 1e12:
+        return ts / 1000.0
+    if ts > 1e10:
+        return ts / 1000.0
+    return ts
+
+
+def _extract_tx_hashes(event: Dict[str, Any]) -> list[str]:
+    raw = event.get("tx_hash")
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return [part for part in raw.split("|") if part]
+    return []
+
+
+def _event_intent_key(asset_id: str) -> str:
+    return f"{EVENT_INTENT_PREFIX}-{asset_id}"
+
+
+async def _should_process_event(
+    event: Dict[str, Any],
+    position_tracker: PositionTracker | None,
+    intent_store: IntentStore | None,
+    risk_limits: RiskLimits,
+) -> bool:
+    asset_id = event.get("asset_id")
+    if not asset_id:
+        return False
+    market = event.get("market") or ""
+    if market and market in risk_limits.blacklist_markets:
+        logger.debug("discarding event for blacklisted market %s", market)
+        return False
+    event_ts = _normalize_timestamp(event.get("timestamp"))
+    if position_tracker and await position_tracker.is_event_stale(event_ts):
+        logger.debug("discarding stale event before watermark: %s", event.get("tx_hash"))
+        return False
+    tx_hashes = _extract_tx_hashes(event)
+    if intent_store and tx_hashes:
+        intent_key = _event_intent_key(asset_id)
+        seen = 0
+        for tx_hash in tx_hashes:
+            if await intent_store.seen(tx_hash, intent_key):
+                seen += 1
+        if seen == len(tx_hashes):
+            logger.debug("discarding already-processed event(s): %s", tx_hashes)
+            return False
+    return True
+
+
+async def _mark_event_seen(
+    event: Dict[str, Any],
+    position_tracker: PositionTracker | None,
+    intent_store: IntentStore | None,
+) -> None:
+    event_ts = _normalize_timestamp(event.get("timestamp"))
+    if position_tracker:
+        await position_tracker.mark_trade_seen(event_ts)
+    if intent_store:
+        asset_id = event.get("asset_id")
+        if not asset_id:
+            return
+        intent_key = _event_intent_key(asset_id)
+        for tx_hash in _extract_tx_hashes(event):
+            await intent_store.record_intent_if_new(tx_hash, intent_key)
 
 
 def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
@@ -62,6 +139,7 @@ async def _coalesce_events(
     queue: asyncio.Queue,
     recorder: TargetCsvRecorder | None = None,
     live_view: LiveViewWriter | None = None,
+    event_guard: Callable[[Dict[str, Any]], Awaitable[bool]] | None = None,
 ) -> Dict[str, Any]:
     """Combine queued events on the same market/asset and side into a single payload."""
     raw_size = event.get("size")
@@ -97,6 +175,12 @@ async def _coalesce_events(
                 queue.task_done()
             except ValueError:
                 pass
+        if event_guard:
+            try:
+                if not await event_guard(candidate):
+                    continue
+            except Exception:  # noqa: BLE001
+                logger.debug("event guard failed; keeping candidate", exc_info=True)
         cand_raw_size = candidate.get("size")
         try:
             cand_size = float(cand_raw_size)
@@ -208,6 +292,9 @@ async def process_event(
         return
 
     market = event.get("market") or ""
+    if market and market in risk_limits.blacklist_markets:
+        logger.debug("ignoring event for blacklisted market %s", market)
+        return
     if market and executor.market_status_checker:
         if not await executor.market_status_checker.is_active(market):
             logger.debug("ignoring event for closed market %s", market)
@@ -230,6 +317,7 @@ async def process_event(
     )
     if recorder:
         await recorder.record_position(target_pos)
+    await _mark_event_seen(event, position_tracker, executor.intent_store)
     if live_view:
         await live_view_update_positions(live_view, position_tracker)
 
@@ -337,7 +425,15 @@ async def consume_events(
             continue
         try:
             # Coalesce backlog items in the consumer; this loop is single-consumer so we have a consistent snapshot.
-            event = await _coalesce_events(event, queue, recorder=recorder, live_view=live_view)
+            if not await _should_process_event(event, position_tracker, executor.intent_store, risk_limits):
+                continue
+            event = await _coalesce_events(
+                event,
+                queue,
+                recorder=recorder,
+                live_view=live_view,
+                event_guard=lambda e: _should_process_event(e, position_tracker, executor.intent_store, risk_limits),
+            )
             await process_event(
                 event=event,
                 settings=settings,
@@ -368,6 +464,7 @@ async def refresh_watchlist(
     interval: float,
     stop_event: asyncio.Event,
     orderbook_manager: OrderBookManager,
+    risk_limits: RiskLimits,
     market_status_checker: MarketStatusChecker | None = None,
 ) -> None:
     while not stop_event.is_set():
@@ -377,6 +474,10 @@ async def refresh_watchlist(
             for pos in positions:
                 market = get_first(pos, ["market", "market_slug", "event_slug", "eventSlug", "slug"])
                 asset_id = pos.get("asset_id")
+
+                if market and market in risk_limits.blacklist_markets:
+                    logger.debug("skipping blacklisted market %s", market)
+                    continue
 
                 if market and market_status_checker:
                     if not await market_status_checker.is_active(market):
@@ -399,6 +500,7 @@ async def monitor_closed_markets(
     *,
     position_tracker: PositionTracker,
     market_status_checker: MarketStatusChecker,
+    risk_limits: RiskLimits,
     interval: float,
     stop_event: asyncio.Event,
     live_view: LiveViewWriter | None = None,
@@ -415,7 +517,11 @@ async def monitor_closed_markets(
             statuses = {}
         closed_markets = {mid for mid, active in statuses.items() if not active}
         if closed_markets:
-            logger.info("Detected closed markets %s; clearing related positions", closed_markets)
+            logger.info(
+                "Detected closed markets %s; blacklisting and clearing related positions",
+                closed_markets,
+            )
+            risk_limits.blacklist_markets.update(closed_markets)
             await position_tracker.drop_markets(closed_markets)
             if live_view:
                 await live_view_update_positions(live_view, position_tracker)
@@ -548,6 +654,7 @@ async def main_async(argv: list[str] | None = None) -> None:
                 interval=settings.watchlist_refresh_interval,
                 stop_event=stop_event,
                 orderbook_manager=orderbook_manager,
+                risk_limits=risk_limits,
                 market_status_checker=market_status_checker,
             ),
             name="watchlist",
@@ -556,6 +663,7 @@ async def main_async(argv: list[str] | None = None) -> None:
             monitor_closed_markets(
                 position_tracker=position_tracker,
                 market_status_checker=market_status_checker,
+                risk_limits=risk_limits,
                 interval=settings.http_poll_interval,
                 stop_event=stop_event,
                 live_view=live_view_writer,

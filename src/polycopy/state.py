@@ -98,17 +98,29 @@ class PositionTracker:
         self._lock = asyncio.Lock()
         self.target = PortfolioState()
         self.ours = PortfolioState()
+        self._last_reconcile_ts: float | None = None
+        self._last_copied_trade_ts: float | None = None
 
     async def refresh(self, *, target_positions: Iterable[dict], our_positions: Iterable[dict]) -> None:
         async with self._lock:
             self.target = PortfolioState.from_api(target_positions)
             self.ours = PortfolioState.from_api(our_positions)
+            self._last_reconcile_ts = time.time()
 
-    async def replace(self, *, target_state: PortfolioState, our_state: PortfolioState | None = None) -> None:
+    async def replace(
+        self,
+        *,
+        target_state: PortfolioState,
+        our_state: PortfolioState | None = None,
+        mark_reconcile: bool = True,
+        reconcile_ts: float | None = None,
+    ) -> None:
         async with self._lock:
             self.target = target_state
             if our_state is not None:
                 self.ours = our_state
+            if mark_reconcile:
+                self._last_reconcile_ts = reconcile_ts if reconcile_ts is not None else time.time()
 
     async def update_target_from_trade(
         self, *, asset_id: str, outcome: str, market: str, size: float, price: float | None
@@ -162,6 +174,28 @@ class PositionTracker:
             # Return deep copies to avoid concurrency issues
             import copy
             return copy.deepcopy(self.target), copy.deepcopy(self.ours)
+
+    async def mark_reconcile(self, timestamp: float | None = None) -> None:
+        async with self._lock:
+            self._last_reconcile_ts = timestamp if timestamp is not None else time.time()
+
+    async def mark_trade_seen(self, timestamp: float | None) -> None:
+        if timestamp is None:
+            return
+        async with self._lock:
+            if self._last_copied_trade_ts is None or timestamp > self._last_copied_trade_ts:
+                self._last_copied_trade_ts = timestamp
+
+    async def event_watermark(self) -> float | None:
+        async with self._lock:
+            candidates = [ts for ts in (self._last_reconcile_ts, self._last_copied_trade_ts) if ts is not None]
+            return max(candidates) if candidates else None
+
+    async def is_event_stale(self, timestamp: float | None) -> bool:
+        if timestamp is None:
+            return False
+        watermark = await self.event_watermark()
+        return watermark is not None and timestamp <= watermark
 
 
 class IntentStore:
