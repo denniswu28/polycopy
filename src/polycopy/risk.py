@@ -27,8 +27,12 @@ class RiskLimits:
             max_notional_per_trade=settings.max_notional_per_trade,
             max_notional_per_market=settings.max_notional_per_market,
             max_portfolio_exposure=settings.max_portfolio_exposure,
-            min_trade_size=SYSTEM_MIN_LIMIT_QTY,
-            min_market_order_notional=SYSTEM_MIN_MARKET_NOTIONAL,
+            min_trade_size=settings.min_trade_size if settings.min_trade_size is not None else SYSTEM_MIN_LIMIT_QTY,
+            min_market_order_notional=(
+                settings.min_market_order_notional
+                if settings.min_market_order_notional is not None
+                else SYSTEM_MIN_MARKET_NOTIONAL
+            ),
             blacklist_markets=set(settings.blacklist_markets),
             blacklist_outcomes=set(settings.blacklist_outcomes),
             slippage_bps=settings.slippage_bps,

@@ -8,6 +8,8 @@ from typing import Awaitable, Callable, Optional, Set
 import websockets
 from websockets import WebSocketClientProtocol
 
+from .events import build_trade_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,18 +67,10 @@ class RtdsClient:
         wallet = (payload.get("proxyWallet") or payload.get("wallet") or "").lower()
         if wallet != self.target_wallet:
             return
-        event = {
-            "type": "target_trade_event",
-            "tx_hash": payload.get("txHash") or payload.get("transactionHash"),
-            "market": payload.get("market_slug") or payload.get("market"),
-            "asset_id": payload.get("asset_id") or payload.get("assetId") or payload.get("asset"),
-            "outcome": payload.get("outcome"),
-            "size": payload.get("size"),
-            "price": payload.get("price"),
-            "is_buy": payload.get("is_buy") if "is_buy" in payload else payload.get("isBuy"),
-            "side": payload.get("side"),
-            "timestamp": payload.get("timestamp"),
-        }
+        event = build_trade_event(payload)
+        if not event:
+            logger.debug("discarding WS payload missing asset_id: %s", payload)
+            return
         try:
             self.queue.put_nowait(event)
         except asyncio.QueueFull:

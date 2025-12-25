@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 import json
 import httpx
+
+from .events import build_trade_event
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,7 @@ class DataAPIClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.close()
 
-    async def fetch_trades(self, user: str, limit: int = 50) -> List[Dict[str, Any]]:
+    async def fetch_trades(self, user: str, limit: int = 50) -> List[dict[str, Any]]:
         logger.info("Fetching trades for user=%s limit=%s", user, limit)
         resp = await self._client.get("/trades", params={"user": user, "limit": limit})
         resp.raise_for_status()
@@ -32,7 +34,7 @@ class DataAPIClient:
         )
         return data if isinstance(data, list) else data.get("data", [])
 
-    async def fetch_positions(self, user: str) -> List[Dict[str, Any]]:
+    async def fetch_positions(self, user: str) -> List[dict[str, Any]]:
         logger.info("Fetching positions for user=%s", user)
         resp = await self._client.get("/positions", params={"user": user})
         resp.raise_for_status()
@@ -42,11 +44,6 @@ class DataAPIClient:
             user, json.dumps(data, indent=2)[:5000],
         )
         return data if isinstance(data, list) else data.get("data", [])
-
-    async def fetch_book(self, asset_id: str) -> Dict[str, Any]:
-        resp = await self._client.get("/book", params={"token_id": asset_id})
-        resp.raise_for_status()
-        return resp.json()
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -79,19 +76,11 @@ class BackstopPoller:
             return True
         return False
 
-    async def _publish(self, trade: Dict[str, Any]) -> None:
-        payload = {
-            "type": "target_trade_event",
-            "tx_hash": trade.get("transactionHash") or trade.get("txHash"),
-            "market": trade.get("market_slug") or trade.get("market"),
-            "asset_id": trade.get("asset_id") or trade.get("assetId") or trade.get("asset"),
-            "outcome": trade.get("outcome"),
-            "size": trade.get("size"),
-            "price": trade.get("price"),
-            "is_buy": trade.get("is_buy") if "is_buy" in trade else trade.get("isBuy"),
-            "side": trade.get("side"),
-            "timestamp": trade.get("timestamp"),
-        }
+    async def _publish(self, trade: Mapping[str, Any]) -> None:
+        payload = build_trade_event(trade)
+        if not payload:
+            logger.debug("dropping backstop trade missing asset_id: %s", trade)
+            return
         try:
             self.queue.put_nowait(payload)
         except asyncio.QueueFull:

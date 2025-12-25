@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
-import json
 import httpx
 
 from .risk import RiskLimits, RiskError, validate_trade

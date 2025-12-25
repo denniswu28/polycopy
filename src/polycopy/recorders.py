@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Iterable, Mapping, MutableSet
 
+from .events import normalize_trade_event
 from .state import Position
 from .util import get_first
 
@@ -104,22 +105,17 @@ class TargetCsvRecorder:
         key = self._trade_key(event)
         if not key:
             return
-        side = (get_first(event, ["side"], "") or "")
-        side = side.lower()
-        if not side:
-            if event.get("is_buy") is not None:
-                side = "buy" if bool(event.get("is_buy")) else "sell"
-            elif event.get("isBuy") is not None:
-                side = "buy" if bool(event.get("isBuy")) else "sell"
+        normalized = normalize_trade_event(event)
+        side = normalized.get("side") or ""
         row = {
             "recorded_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
             "tx_hash": key[0],
             "asset_id": key[1],
-            "market": get_first(event, ["market", "market_slug"], "") or "",
-            "outcome": get_first(event, ["outcome"], "") or "",
+            "market": normalized.get("market") or "",
+            "outcome": normalized.get("outcome") or "",
             "side": side,
-            "size": event.get("size"),
-            "price": event.get("price"),
+            "size": normalized.get("size"),
+            "price": normalized.get("price"),
         }
         async with self._lock:
             if key in self._trade_keys:

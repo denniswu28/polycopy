@@ -9,6 +9,7 @@ from typing import Any, Deque, Iterable, Mapping
 
 import orjson
 
+from .events import normalize_trade_event
 from .state import PortfolioState, Position
 from .util import get_first
 
@@ -52,24 +53,20 @@ def _position_dict(obj: Mapping[str, Any] | Position) -> dict:
 
 
 def _trade_dict(event: Mapping[str, Any], *, kind: str) -> dict | None:
-    asset_id = _value(event, ("asset_id", "assetId", "asset", "conditionId"))
+    normalized = normalize_trade_event(event)
+    asset_id = _value(normalized, ("asset_id",))
     if not asset_id:
         return None
     try:
-        size = float(event.get("size") or 0)
+        size = float(normalized.get("size") or 0)
     except (TypeError, ValueError):
         size = 0.0
     try:
-        price = float(event.get("price")) if event.get("price") is not None else None
+        price = float(normalized.get("price")) if normalized.get("price") is not None else None
     except (TypeError, ValueError):
         price = None
-    side = (event.get("side") or "").lower()
-    if not side:
-        if event.get("is_buy") is True or event.get("isBuy") is True:
-            side = "buy"
-        elif event.get("is_buy") is False or event.get("isBuy") is False:
-            side = "sell"
-    ts_raw = event.get("timestamp") or time.time()
+    side = normalized.get("side") or ""
+    ts_raw = normalized.get("timestamp") or time.time()
     try:
         ts_val = float(ts_raw)
     except (TypeError, ValueError):
@@ -77,8 +74,8 @@ def _trade_dict(event: Mapping[str, Any], *, kind: str) -> dict | None:
     return {
         "kind": kind,
         "asset_id": str(asset_id),
-        "market": _value(event, ("market", "market_slug"), "") or "",
-        "outcome": str(event.get("outcome") or _value(event, ("outcome_id",), "")),
+        "market": _value(normalized, ("market",)) or "",
+        "outcome": str(normalized.get("outcome") or _value(normalized, ("outcome_id",), "")),
         "side": side,
         "size": size,
         "price": price,

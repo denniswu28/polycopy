@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
