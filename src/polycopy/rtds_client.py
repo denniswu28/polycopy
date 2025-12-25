@@ -52,7 +52,7 @@ class RtdsClient:
                 if watchlist:
                     filters["market_slug"] = list(watchlist)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("watchlist fetch failed: %s", exc)
+                logger.info("watchlist fetch failed: %s", exc)
         msg = {"action": "subscribe", "streams": [{"topic": "activity", "filters": filters}]}
         await ws.send(json.dumps(msg))
 
@@ -69,7 +69,7 @@ class RtdsClient:
             return
         event = build_trade_event(payload)
         if not event:
-            logger.debug("discarding WS payload missing asset_id: %s", payload)
+            logger.info("discarding WS payload missing asset_id: %s", payload)
             return
         try:
             self.queue.put_nowait(event)

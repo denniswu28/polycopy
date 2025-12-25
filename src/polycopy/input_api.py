@@ -1,19 +1,183 @@
+"""Input API: data API clients, market data clients, orderbook access, status checks."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Set, Tuple
+import json
 import httpx
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import BookParams
 from py_clob_client.exceptions import PolyException
 
-from .data_api import DataAPIClient
-from .state import PortfolioState
+from .util import get_first
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Event normalization / helpers (copied from events.py)
+# ---------------------------------------------------------------------------
+
+
+def normalize_side(event: Mapping[str, Any]) -> str:
+    """Normalize side values from mixed payload formats."""
+    side = (event.get("side") or "").lower()
+    if side:
+        return side
+    if event.get("is_buy") is True or event.get("isBuy") is True:
+        return "buy"
+    if event.get("is_buy") is False or event.get("isBuy") is False:
+        return "sell"
+    return ""
+
+
+def normalize_trade_event(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a trade payload into the internal event schema."""
+    side = normalize_side(payload)
+    is_buy = payload.get("is_buy") if "is_buy" in payload else payload.get("isBuy")
+    if is_buy is None and side:
+        is_buy = side == "buy"
+    return {
+        "type": "target_trade_event",
+        "tx_hash": get_first(payload, ["tx_hash", "transactionHash", "txHash"]),
+        "market": get_first(payload, ["market_slug", "market"]),
+        "asset_id": get_first(payload, ["asset_id", "assetId", "asset", "conditionId"]),
+        "outcome": get_first(payload, ["outcome"], ""),
+        "size": payload.get("size"),
+        "price": payload.get("price"),
+        "is_buy": is_buy,
+        "side": side,
+        "timestamp": payload.get("timestamp"),
+    }
+
+
+def build_trade_event(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Normalize and validate a trade payload for queue ingestion."""
+    event = normalize_trade_event(payload)
+    if not event.get("asset_id"):
+        return None
+    return event
+
+
+# ---------------------------------------------------------------------------
+# Data API client (copied from data_api.py)
+# ---------------------------------------------------------------------------
+
+
+class DataAPIClient:
+    """Thin wrapper around the Polymarket public data API."""
+
+    def __init__(self, base_url: str, api_key: str, timeout: float = 5.0) -> None:
+        headers = {"X-API-Key": api_key}
+        self._client = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=timeout)
+
+    async def __aenter__(self) -> "DataAPIClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
+    async def fetch_trades(self, user: str, limit: int = 50) -> List[dict[str, Any]]:
+        logger.info("Fetching trades for user=%s limit=%s", user, limit)
+        resp = await self._client.get("/trades", params={"user": user, "limit": limit})
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info(
+            "Fetched trades for user=%s limit=%s: %s",
+            user, limit, json.dumps(data, indent=2)[:5000],
+        )
+        return data if isinstance(data, list) else data.get("data", [])
+
+    async def fetch_positions(self, user: str) -> List[dict[str, Any]]:
+        logger.info("Fetching positions for user=%s", user)
+        resp = await self._client.get("/positions", params={"user": user})
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info(
+            "Fetched positions for user=%s: %s",
+            user, json.dumps(data, indent=2)[:5000],
+        )
+        return data if isinstance(data, list) else data.get("data", [])
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
+class BackstopPoller:
+    """HTTP polling backstop when WebSocket is unavailable."""
+
+    def __init__(
+        self,
+        client: DataAPIClient,
+        target_wallet: str,
+        queue: asyncio.Queue,
+        interval: float = 1.0,
+    ) -> None:
+        self.client = client
+        self.target_wallet = target_wallet
+        self.queue = queue
+        self.interval = interval
+        self._last_seen: Optional[Tuple[float, str]] = None
+        self._running = False
+
+    def _seen(self, ts: float, tx: str) -> bool:
+        if self._last_seen is None:
+            return False
+        last_ts, last_tx = self._last_seen
+        # if ts < last_ts:
+        #     return True
+        if ts == last_ts and tx == last_tx:
+            return True
+        return False
+
+    async def _publish(self, trade: Mapping[str, Any]) -> None:
+        payload = build_trade_event(trade)
+        if not payload:
+            logger.info("dropping backstop trade missing asset_id: %s", trade)
+            return
+        try:
+            self.queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            logger.warning("backstop queue full; dropping event %s", payload)
+
+    async def run(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                trades = await self.client.fetch_trades(self.target_wallet, limit=50)
+                for trade in sorted(trades, key=lambda x: x.get("timestamp", 0)):
+                    ts = float(trade.get("timestamp", 0))
+                    tx = trade.get("transactionHash") or trade.get("txHash") or ""
+                    if not tx:
+                        continue
+                    if self._seen(ts, tx):
+                        logger.info("Backstop skipping seen trade: %s", tx)
+                        continue
+                    logger.info("Backstop found new trade: %s", tx)
+                    await self._publish(trade)
+                    self._last_seen = (ts, tx)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("backstop poll error: %s", exc)
+            await asyncio.sleep(self.interval)
+
+    def stop(self) -> None:
+        self._running = False
+
+
+# ---------------------------------------------------------------------------
+# Order book manager (copied from orderbook.py)
+# ---------------------------------------------------------------------------
+
+
+# Forward reference for PortfolioState - will be imported at runtime
+# to avoid circular import issues
+def _get_portfolio_state_class():
+    from .state import PortfolioState
+    return PortfolioState
 
 
 @dataclass
@@ -336,7 +500,7 @@ class OrderBookManager:
         async with self._lock:
             return list(self._subscriptions)
 
-    async def bootstrap_from_portfolios(self, target: PortfolioState, ours: PortfolioState) -> None:
+    async def bootstrap_from_portfolios(self, target, ours) -> None:
         """Subscribe to all assets currently held."""
         async with self._lock:
             for aid, pos in target.positions.items():
@@ -368,3 +532,42 @@ class OrderBookManager:
         except (TypeError, ValueError, KeyError) as exc:
             logger.debug("fetch_price failed for %s %s: %s", asset_id, side, exc)
             return None
+
+
+# ---------------------------------------------------------------------------
+# Market websocket / book client (copied from market_client.py)
+# ---------------------------------------------------------------------------
+
+
+class MarketBookClient:
+    """WebSocket client for Polymarket CLOB market channel (public)."""
+
+    def __init__(
+        self,
+        url: str,
+        orderbook_manager: OrderBookManager,
+        heartbeat_interval: float = 10.0,
+        backoff_seconds: float = 5.0,
+    ) -> None:
+        self.orderbook_manager = orderbook_manager
+        self.heartbeat_interval = heartbeat_interval
+        self.backoff_seconds = backoff_seconds
+        self._running = False
+
+    async def run(self) -> None:
+        self._running = True
+        failures = 0
+        while self._running:
+            try:
+                subscriptions = await self.orderbook_manager.get_subscriptions()
+                if subscriptions:
+                    await self.orderbook_manager.refresh_prices(subscriptions)
+                    failures = 0
+                await asyncio.sleep(self.heartbeat_interval)
+            except Exception as exc:
+                failures += 1
+                logger.warning("MarketBookClient polling failed: %s (failure %s)", exc, failures)
+                await asyncio.sleep(min(self.backoff_seconds * failures, 60))
+
+    def stop(self) -> None:
+        self._running = False

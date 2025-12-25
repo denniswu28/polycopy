@@ -14,19 +14,32 @@ except ImportError:  # pragma: no cover
 
 from dotenv import load_dotenv
 
-from .clob_exec import ExecutionEngine, MarketStatusChecker
 from .config import PROJECT_ROOT, Settings, load_settings, MARKET_STATUS_TTL_MULTIPLIER
 from .credentials import ensure_api_credentials, require_api_credentials
-from .data_api import BackstopPoller, DataAPIClient
-from .events import normalize_side
-from .live_shared import LiveViewWriter
-from .market_client import MarketBookClient
-from .orderbook import OrderBookManager
-from .reconcile import reconcile_loop
-from .recorders import TargetCsvRecorder
-from .risk import RiskLimits, RiskError
+
+# Core imports - new consolidated modules
+from .input_api import (
+    DataAPIClient,
+    BackstopPoller,
+    MarketBookClient,
+    OrderBookManager,
+    normalize_side,
+)
+
+from .exec_engine import (
+    ExecutionEngine,
+    MarketStatusChecker,
+    RiskLimits,
+    RiskError,
+    IntentStore,
+    PositionTracker,
+    PortfolioState,
+    reconcile_loop,
+)
+
+from .output_api import TargetCsvRecorder, LiveViewWriter
+
 from .rtds_client import RtdsClient
-from .state import IntentStore, PositionTracker, PortfolioState
 from .util import get_first
 from .util import logging as log_util
 from .util.time import check_clock_skew
@@ -78,11 +91,11 @@ async def _should_process_event(
         return False
     market = event.get("market") or ""
     if market and market in risk_limits.blacklist_markets:
-        logger.debug("discarding event for blacklisted market %s", market)
+        logger.info("discarding event for blacklisted market %s", market)
         return False
     event_ts = _normalize_timestamp(event.get("timestamp"))
     if position_tracker and await position_tracker.is_event_stale(event_ts):
-        logger.debug("discarding stale event before watermark: %s", event.get("tx_hash"))
+        logger.info("discarding stale event before watermark: %s", event.get("tx_hash"))
         return False
     tx_hashes = _extract_tx_hashes(event)
     if intent_store and tx_hashes:
@@ -92,7 +105,7 @@ async def _should_process_event(
             if await intent_store.seen(tx_hash, intent_key):
                 seen += 1
         if seen == len(tx_hashes):
-            logger.debug("discarding already-processed event(s): %s", tx_hashes)
+            logger.info("discarding already-processed event(s): %s", tx_hashes)
             return False
     return True
 
@@ -180,7 +193,7 @@ async def _coalesce_events(
                 if not await event_guard(candidate):
                     continue
             except Exception:  # noqa: BLE001
-                logger.debug("event guard failed; keeping candidate", exc_info=True)
+                logger.info("event guard failed; keeping candidate", exc_info=True)
         cand_raw_size = candidate.get("size")
         try:
             cand_size = float(cand_raw_size)
@@ -293,11 +306,11 @@ async def process_event(
 
     market = event.get("market") or ""
     if market and market in risk_limits.blacklist_markets:
-        logger.debug("ignoring event for blacklisted market %s", market)
+        logger.info("ignoring event for blacklisted market %s", market)
         return
     if market and executor.market_status_checker:
         if not await executor.market_status_checker.is_active(market):
-            logger.debug("ignoring event for closed market %s", market)
+            logger.info("ignoring event for closed market %s", market)
             return
 
     outcome = event.get("outcome") or ""
@@ -476,12 +489,12 @@ async def refresh_watchlist(
                 asset_id = pos.get("asset_id")
 
                 if market and market in risk_limits.blacklist_markets:
-                    logger.debug("skipping blacklisted market %s", market)
+                    logger.info("skipping blacklisted market %s", market)
                     continue
 
                 if market and market_status_checker:
                     if not await market_status_checker.is_active(market):
-                        logger.debug("skipping closed market %s", market)
+                        logger.info("skipping closed market %s", market)
                         continue
 
                 if market:
@@ -489,7 +502,7 @@ async def refresh_watchlist(
                 if asset_id:
                     await orderbook_manager.ensure_subscribed(asset_id)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("watchlist refresh failed: %s", exc)
+            logger.info("watchlist refresh failed: %s", exc)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
@@ -513,7 +526,7 @@ async def monitor_closed_markets(
         try:
             statuses = await market_status_checker.refresh_markets(set(markets))
         except (PolyException, httpx.HTTPError, ValueError) as exc:
-            logger.debug("market status refresh failed: %s", exc)
+            logger.info("market status refresh failed: %s", exc)
             statuses = {}
         closed_markets = {mid for mid, active in statuses.items() if not active}
         if closed_markets:
@@ -599,7 +612,7 @@ async def main_async(argv: list[str] | None = None) -> None:
             initial_trades = await data_api.fetch_trades(settings.target_wallet, limit=INITIAL_TRADE_LOG_LIMIT)
             await recorder.record_trades(initial_trades)
         except Exception:  # noqa: BLE001
-            logger.debug("initial trade recording failed", exc_info=True)
+            logger.info("initial trade recording failed", exc_info=True)
     if live_view_writer:
         live_view_writer.update_positions(target=target_positions, ours=our_positions)
         if initial_trades:
