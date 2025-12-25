@@ -923,9 +923,148 @@ Requires filters: ["token_id_1", ...]
 }
 ```
 
----
+8) CORE Trades API (Get trades for a user or markets)
 
-END OF SPEC
+HOST: (not specified here; treat as a "Core" REST service)
+PATH: GET /trades
 
-```
-```
+PURPOSE:
+Fetch historical trade prints filtered by user and/or market/event identifiers.
+
+QUERY PARAMETERS:
+
+limit: integer (default=100) // 0 <= limit <= 10000
+
+offset: integer (default=0) // 0 <= offset <= 10000
+
+takerOnly: boolean (default=true)
+
+filterType: "CASH" | "TOKENS" // must be provided together with filterAmount
+
+filterAmount: number // >= 0; must be provided together with filterType
+
+market: string[] // comma-separated condition IDs; mutually exclusive with eventId
+
+format: 0x-prefixed 64-hex string
+
+eventId: integer[] // comma-separated event IDs; >= 1; mutually exclusive with market
+
+user: string // user profile address (0x-prefixed, 40 hex)
+
+example: "0x56687bf447db6ffa42ffe2204a05edaa20f55839"
+
+side: "BUY" | "SELL"
+
+RESPONSE (200 OK): application/json
+A list/array of trade objects with fields:
+
+[
+  {
+    "proxyWallet": "string",
+    "side": "BUY | SELL",
+    "asset": "string",
+    "conditionId": "string",
+    "size": 0,
+    "price": 0,
+    "timestamp": 0,
+    "title": "string",
+    "slug": "string",
+    "icon": "string",
+    "eventSlug": "string",
+    "outcome": "string",
+    "outcomeIndex": 0,
+    "name": "string",
+    "pseudonym": "string",
+    "bio": "string",
+    "profileImage": "string",
+    "profileImageOptimized": "string",
+    "transactionHash": "string"
+  }
+]
+
+
+NOTES / CONSTRAINTS:
+
+market and eventId are mutually exclusive.
+
+filterType and filterAmount must be provided together.
+
+9) GAMMA API — Markets metadata (example)
+
+HOST: https://gamma-api.polymarket.com
+
+EXAMPLE:
+GET /markets?clob_token_ids=<tokenId>&slug=<marketSlug>
+
+Example request (Python):
+
+import requests
+
+url = "https://gamma-api.polymarket.com/markets?clob_token_ids=1766332852574&slug=lighter-market-cap-fdv-1b-one-day-after-launch"
+resp = requests.get(url)
+print(resp.text)
+
+
+RESPONSE (200 OK): application/json
+Returns an array of market objects with deep nested metadata (market + events + series + collections + categories + tags).
+A (truncated) canonical shape:
+
+[
+  {
+    "id": "string",
+    "question": "string",
+    "conditionId": "string",
+    "slug": "string",
+    "endDate": "string",
+    "startDate": "string",
+    "active": true,
+    "closed": true,
+    "archived": true,
+    "enableOrderBook": true,
+    "orderPriceMinTickSize": 0,
+    "orderMinSize": 0,
+    "volumeNum": 0,
+    "liquidityNum": 0,
+    "volume24hr": 0,
+    "makerBaseFee": 0,
+    "takerBaseFee": 0,
+    "acceptingOrders": true,
+    "notificationsEnabled": true,
+    "clobTokenIds": "string",
+    "events": [
+      {
+        "id": "string",
+        "slug": "string",
+        "title": "string",
+        "startDate": "string",
+        "endDate": "string",
+        "active": true,
+        "closed": true,
+        "archived": true,
+        "enableOrderBook": true,
+        "negRisk": true,
+        "markets": "array",
+        "series": "array"
+      }
+    ],
+    "categories": "array",
+    "tags": "array"
+  }
+]
+
+
+IMPLEMENTATION NOTE:
+
+Gamma /markets is best used to map between human-friendly identifiers (slug/question/event) and trading identifiers (conditionId, clobTokenIds/token ids).
+
+Because Gamma responses are very large, downstream agents should extract only needed keys:
+
+conditionId
+
+slug / question
+
+clobTokenIds (token ids)
+
+enableOrderBook / negRisk
+
+fees/ticks/min size if present
