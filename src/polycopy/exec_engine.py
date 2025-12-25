@@ -128,15 +128,15 @@ class PortfolioState:
     def from_api(cls, items: Iterable[dict]) -> "PortfolioState":
         positions: Dict[str, Position] = {}
         for item in items:
-            asset_id = get_first(item, ["asset_id", "assetId", "asset", "conditionId"])
+            asset_id = item["asset"]
             if not asset_id:
                 continue
             positions[asset_id] = Position(
                 asset_id=asset_id,
-                outcome=get_first(item, ["outcome", "outcome_id"], ""),
-                size=float(get_first(item, ["quantity", "size"], 0)),
-                market=get_first(item, ["market_slug", "market", "event_slug", "eventSlug", "slug"], ""),
-                average_price=float(get_first(item, ["avg_price", "avgPrice", "price"], 0)),
+                outcome=item["outcome"],
+                size=float(item["size"]),
+                market=get_first(item, ["eventSlug", "slug"], ""),
+                average_price=float(item["avgPrice"]),
             )
         return cls(positions=positions, last_updated=time.time())
 

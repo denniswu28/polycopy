@@ -8,7 +8,7 @@ from typing import Awaitable, Callable, Optional, Set
 import websockets
 from websockets import WebSocketClientProtocol
 
-from .events import build_trade_event
+from .input_api import build_trade_event
 
 logger = logging.getLogger(__name__)
 

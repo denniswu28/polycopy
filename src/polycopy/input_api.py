@@ -25,28 +25,22 @@ logger = logging.getLogger(__name__)
 
 def normalize_side(event: Mapping[str, Any]) -> str:
     """Normalize side values from mixed payload formats."""
-    side = (event.get("side") or "").lower()
-    if side:
+    side = (event.get("side") or "").upper()
+    if side in ("BUY", "SELL"):
         return side
-    if event.get("is_buy") is True or event.get("isBuy") is True:
-        return "buy"
-    if event.get("is_buy") is False or event.get("isBuy") is False:
-        return "sell"
     return ""
 
 
 def normalize_trade_event(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize a trade payload into the internal event schema."""
     side = normalize_side(payload)
-    is_buy = payload.get("is_buy") if "is_buy" in payload else payload.get("isBuy")
-    if is_buy is None and side:
-        is_buy = side == "buy"
+    is_buy = side == "BUY"
     return {
         "type": "target_trade_event",
-        "tx_hash": get_first(payload, ["tx_hash", "transactionHash", "txHash"]),
-        "market": get_first(payload, ["market_slug", "market"]),
-        "asset_id": get_first(payload, ["asset_id", "assetId", "asset", "conditionId"]),
-        "outcome": get_first(payload, ["outcome"], ""),
+        "tx_hash": get_first(payload, ["transactionHash", "txHash"]),
+        "market": get_first(payload, ["eventSlug", "slug"]),
+        "asset_id": payload.get("asset"),
+        "outcome": payload.get("outcome"),
         "size": payload.get("size"),
         "price": payload.get("price"),
         "is_buy": is_buy,
@@ -176,7 +170,7 @@ class BackstopPoller:
 # Forward reference for PortfolioState - will be imported at runtime
 # to avoid circular import issues
 def _get_portfolio_state_class():
-    from .state import PortfolioState
+    from .exec_engine import PortfolioState
     return PortfolioState
 
 

@@ -15,8 +15,8 @@ from typing import Any, Deque, Iterable, Mapping, MutableSet
 
 import orjson
 
-from .events import normalize_trade_event
-from .state import Position, PortfolioState
+from .input_api import normalize_trade_event
+from .exec_engine import Position, PortfolioState
 from .util import get_first
 
 logger = logging.getLogger(__name__)
@@ -97,19 +97,19 @@ class TargetCsvRecorder:
 
     def _trade_key(self, data: Mapping[str, object]) -> tuple[str, str] | None:
         tx_hash = get_first(data, ["tx_hash", "transactionHash", "txHash"])
-        asset_id = get_first(data, ["asset_id", "assetId", "asset", "conditionId"])
+        asset_id = get_first(data, ["asset", "asset_id"])
         if not tx_hash or not asset_id:
             return None
         return (str(tx_hash), str(asset_id))
 
     def _position_key(self, data: Mapping[str, object]) -> tuple[str, str, float, float] | None:
-        asset_id = get_first(data, ["asset_id", "assetId", "asset", "conditionId"])
+        asset_id = get_first(data, ["asset", "asset_id"])
         if not asset_id:
             return None
-        outcome = str(get_first(data, ["outcome", "outcome_id"], "") or "")
+        outcome = str(get_first(data, ["outcome"], "") or "")
         try:
-            size = float(get_first(data, ["size", "quantity"], 0) or 0)
-            avg_price = float(get_first(data, ["avg_price", "avgPrice", "average_price"], 0) or 0)
+            size = float(get_first(data, ["size"], 0) or 0)
+            avg_price = float(get_first(data, ["avgPrice", "average_price"], 0) or 0)
         except (TypeError, ValueError):
             return None
         return (str(asset_id), outcome, size, avg_price)
@@ -151,7 +151,7 @@ class TargetCsvRecorder:
         if not key:
             return None
         asset_id, outcome, size, avg_price = key
-        market = get_first(position, ["market", "market_slug", "event_slug", "eventSlug", "slug"], "") or ""
+        market = get_first(position, ["eventSlug", "slug", "market"], "") or ""
         return {
             "recorded_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
             "asset_id": asset_id,
@@ -169,7 +169,7 @@ class TargetCsvRecorder:
                 "market": position.market,
                 "outcome": position.outcome,
                 "size": position.size,
-                "avg_price": position.average_price,
+                "average_price": position.average_price,
             }
         else:
             data = position
@@ -217,21 +217,21 @@ def _value(obj: Mapping[str, Any] | Position, keys: tuple[str, ...], default: An
 
 
 def _position_dict(obj: Mapping[str, Any] | Position) -> dict:
-    asset_id = _value(obj, ("asset_id", "assetId", "asset", "conditionId"))
+    asset_id = _value(obj, ("asset", "asset_id"))
     if not asset_id:
         return {}
     try:
-        size = float(_value(obj, ("size", "quantity"), 0) or 0)
+        size = float(_value(obj, ("size",), 0) or 0)
     except (TypeError, ValueError):
         size = 0.0
     try:
-        avg_price = float(_value(obj, ("avg_price", "avgPrice", "average_price"), 0) or 0)
+        avg_price = float(_value(obj, ("avgPrice", "average_price"), 0) or 0)
     except (TypeError, ValueError):
         avg_price = 0.0
     return {
         "asset_id": str(asset_id),
-        "market": _value(obj, ("market", "market_slug", "event_slug", "eventSlug", "slug"), "") or "",
-        "outcome": str(_value(obj, ("outcome", "outcome_id"), "") or ""),
+        "market": _value(obj, ("eventSlug", "slug", "market"), "") or "",
+        "outcome": str(_value(obj, ("outcome",), "") or ""),
         "size": size,
         "average_price": avg_price,
     }

@@ -96,6 +96,7 @@ async def _should_process_event(
     event_ts = _normalize_timestamp(event.get("timestamp"))
     if position_tracker and await position_tracker.is_event_stale(event_ts):
         logger.info("discarding stale event before watermark: %s", event.get("tx_hash"))
+        logger.info("event timestamp: %s, watermark: %s", event_ts, position_tracker.event_watermark())
         return False
     tx_hashes = _extract_tx_hashes(event)
     if intent_store and tx_hashes:
@@ -129,9 +130,9 @@ async def _mark_event_seen(
 
 def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
     side = normalize_side(event)
-    if side == "buy":
+    if side == "BUY":
         return size
-    if side == "sell":
+    if side == "SELL":
         return -size
     if size < 0:
         # Some feeds encode sells as negative sizes even without an explicit side flag.
@@ -141,9 +142,9 @@ def _signed_size_from_event(event: Dict[str, Any], size: float) -> float | None:
 
 def _side_from_size(value: float) -> str:
     if value > 0:
-        return "buy"
+        return "BUY"
     if value < 0:
-        return "sell"
+        return "SELL"
     return ""
 
 
@@ -234,7 +235,7 @@ async def _coalesce_events(
     net_side = _side_from_size(total_signed)
     merged["size"] = abs(total_signed)
     merged["side"] = net_side
-    merged["is_buy"] = net_side == "buy"
+    merged["is_buy"] = net_side == "BUY"
     if tx_hashes:
         merged["tx_hash"] = "|".join(sorted(tx_hashes))
     if latest_ts is not None:
@@ -437,7 +438,6 @@ async def consume_events(
         except asyncio.TimeoutError:
             continue
         try:
-            # Coalesce backlog items in the consumer; this loop is single-consumer so we have a consistent snapshot.
             if not await _should_process_event(event, position_tracker, executor.intent_store, risk_limits):
                 continue
             event = await _coalesce_events(
@@ -485,8 +485,8 @@ async def refresh_watchlist(
             positions = await data_api.fetch_positions(target_wallet)
             watchlist.clear()
             for pos in positions:
-                market = get_first(pos, ["market", "market_slug", "event_slug", "eventSlug", "slug"])
-                asset_id = pos.get("asset_id")
+                market = get_first(pos, ["eventSlug", "slug"])
+                asset_id = pos.get("asset")
 
                 if market and market in risk_limits.blacklist_markets:
                     logger.info("skipping blacklisted market %s", market)

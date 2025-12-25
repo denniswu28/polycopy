@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock
 
 from polycopy.config import Settings
 from polycopy.main import process_event
-from polycopy.recorders import TargetCsvRecorder
-from polycopy.risk import RiskLimits
-from polycopy.state import Position, PositionTracker
+from polycopy.output_api import TargetCsvRecorder
+from polycopy.exec_engine import RiskLimits
+from polycopy.exec_engine import Position, PositionTracker
 
 
 @pytest.mark.asyncio
@@ -74,7 +74,7 @@ async def test_process_event_records_positions(tmp_path):
         "outcome": "YES",
         "market": "m1",
         "tx_hash": "0xtx123",
-        "is_buy": True,
+        "side": "BUY",
     }
 
     await process_event(

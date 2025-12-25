@@ -4,9 +4,9 @@ from typing import cast
 
 import pytest
 
-from polycopy.data_api import BackstopPoller, DataAPIClient
+from polycopy.input_api import BackstopPoller, DataAPIClient
 from polycopy.rtds_client import RtdsClient
-from polycopy.state import PortfolioState
+from polycopy.exec_engine import PortfolioState
 
 
 def test_portfolio_state_parses_camel_case_payload():
@@ -49,7 +49,7 @@ async def test_rtds_handles_asset_field():
         "proxyWallet": "0xAbC",
         "asset": "0xasset",
         "transactionHash": "0xtx",
-        "market_slug": "market",
+        "eventSlug": "market",
         "outcome": "YES",
         "size": 2,
         "price": 0.5,
