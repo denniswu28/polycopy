@@ -16,6 +16,10 @@ def _find_project_root() -> Path:
 
 PROJECT_ROOT = _find_project_root()
 
+MARKET_STATUS_TTL_MULTIPLIER = 2.0
+SYSTEM_MIN_LIMIT_QTY = 10.0
+SYSTEM_MIN_MARKET_NOTIONAL = 1.0
+
 
 class Settings(BaseSettings):
     """Typed runtime settings loaded from environment and CLI overrides."""
@@ -32,14 +36,14 @@ class Settings(BaseSettings):
     rtds_ws_url: str = "wss://ws-live-data.polymarket.com"
     clob_rest_url: str = "https://clob.polymarket.com"
     signature_type: int = Field(
-        1, description="Signature type for CLOB auth (1=Magic/email, 2=Web3 browser wallet)"
+        2, description="Signature type for CLOB auth (1=Magic/email, 2=Web3 browser wallet)"
     )
     chain_id: int = 137
 
     http_poll_interval: float = 1.0
-    reconcile_interval: float = 30.0
-    watchlist_refresh_interval: float = 30.0
-    ws_heartbeat_interval: float = 15.0
+    reconcile_interval: float = 3.0
+    watchlist_refresh_interval: float = 5.0
+    ws_heartbeat_interval: float = 10.0
     ws_backoff_seconds: float = 5.0
     queue_maxsize: int = 512
 
@@ -47,8 +51,6 @@ class Settings(BaseSettings):
     max_notional_per_trade: float = 250.0
     max_notional_per_market: float = 1000.0
     max_portfolio_exposure: float = 5000.0
-    min_trade_size: float = Field(10.0, description="Minimum limit order size used for copy trades")
-    min_market_order_notional: float = Field(1.0, description="Minimum notional required when placing market orders")
     buy_limit_price: float = 1.0
     sell_limit_price: float = 0.0
     slippage_bps: int = 50

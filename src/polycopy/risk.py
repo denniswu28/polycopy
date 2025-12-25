@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, List, Set
 
+from .config import SYSTEM_MIN_LIMIT_QTY, SYSTEM_MIN_MARKET_NOTIONAL
+
 
 class RiskError(Exception):
     """Raised when a trade violates configured risk controls."""
@@ -25,8 +27,8 @@ class RiskLimits:
             max_notional_per_trade=settings.max_notional_per_trade,
             max_notional_per_market=settings.max_notional_per_market,
             max_portfolio_exposure=settings.max_portfolio_exposure,
-            min_trade_size=settings.min_trade_size,
-            min_market_order_notional=settings.min_market_order_notional,
+            min_trade_size=SYSTEM_MIN_LIMIT_QTY,
+            min_market_order_notional=SYSTEM_MIN_MARKET_NOTIONAL,
             blacklist_markets=set(settings.blacklist_markets),
             blacklist_outcomes=set(settings.blacklist_outcomes),
             slippage_bps=settings.slippage_bps,

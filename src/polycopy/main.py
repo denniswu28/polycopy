@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
 from dotenv import load_dotenv
 
 from .clob_exec import ExecutionEngine, MarketStatusChecker
-from .config import PROJECT_ROOT, Settings, load_settings
+from .config import PROJECT_ROOT, Settings, load_settings, MARKET_STATUS_TTL_MULTIPLIER
 from .credentials import ensure_api_credentials, require_api_credentials
 from .data_api import BackstopPoller, DataAPIClient
 from .live_shared import LiveViewWriter
@@ -57,7 +57,12 @@ def _side_from_size(value: float) -> str:
     return ""
 
 
-async def _coalesce_events(event: Dict[str, Any], queue: asyncio.Queue) -> Dict[str, Any]:
+async def _coalesce_events(
+    event: Dict[str, Any],
+    queue: asyncio.Queue,
+    recorder: TargetCsvRecorder | None = None,
+    live_view: LiveViewWriter | None = None,
+) -> Dict[str, Any]:
     """Combine queued events on the same market/asset and side into a single payload."""
     raw_size = event.get("size")
     try:
@@ -67,6 +72,12 @@ async def _coalesce_events(event: Dict[str, Any], queue: asyncio.Queue) -> Dict[
     base_signed = _signed_size_from_event(event, base_size)
     if base_signed is None:
         return event
+
+    # Record the initial event (raw)
+    if recorder:
+        await recorder.record_trade(event)
+    if live_view:
+        live_view.record_target_trade(event)
 
     base_market = event.get("market") or ""
     base_asset = event.get("asset_id")
@@ -93,13 +104,17 @@ async def _coalesce_events(event: Dict[str, Any], queue: asyncio.Queue) -> Dict[
             unmatched.append(candidate)
             continue
         cand_signed = _signed_size_from_event(candidate, cand_size)
-        cand_side = _side_from_size(cand_signed or 0)
         if (
             cand_signed is not None
-            and cand_side == base_side
             and (candidate.get("market") or "") == base_market
             and candidate.get("asset_id") == base_asset
         ):
+            # Record the consumed candidate (raw)
+            if recorder:
+                await recorder.record_trade(candidate)
+            if live_view:
+                live_view.record_target_trade(candidate)
+
             total_signed += cand_signed
             if candidate.get("tx_hash"):
                 tx_hashes.add(candidate.get("tx_hash"))
@@ -119,9 +134,10 @@ async def _coalesce_events(event: Dict[str, Any], queue: asyncio.Queue) -> Dict[
             break
 
     merged = dict(event)
+    net_side = _side_from_size(total_signed)
     merged["size"] = abs(total_signed)
-    merged["side"] = base_side
-    merged["is_buy"] = base_side == "buy"
+    merged["side"] = net_side
+    merged["is_buy"] = net_side == "buy"
     if tx_hashes:
         merged["tx_hash"] = "|".join(sorted(tx_hashes))
     if latest_ts is not None:
@@ -191,9 +207,6 @@ async def process_event(
     if signed_size is None:
         return
 
-    if recorder:
-        await recorder.record_trade(event)
-
     market = event.get("market") or ""
     if market and executor.market_status_checker:
         if not await executor.market_status_checker.is_active(market):
@@ -218,24 +231,11 @@ async def process_event(
     if recorder:
         await recorder.record_position(target_pos)
     if live_view:
-        live_view.record_target_trade(
-            {
-                "asset_id": asset_id,
-                "market": market,
-                "outcome": outcome,
-                "size": signed_size,
-                "price": price,
-                "side": side,
-                "timestamp": event.get("timestamp"),
-            }
-        )
         await live_view_update_positions(live_view, position_tracker)
 
     desired = target_pos.size * settings.copy_factor
     current_size = current_pos.size if current_pos else 0.0
     delta = desired - current_size
-    if abs(delta) < risk_limits.min_trade_size:
-        return
 
     order_side = _side_from_size(delta)
     quote_price = None
@@ -279,6 +279,9 @@ async def process_event(
     if exposure_price is None:
         logger.warning("Exposure price missing for %s; using fallback %s", asset_id, pricing_for_exposure)
     notional = abs(delta) * pricing_for_exposure
+    if notional < risk_limits.min_market_order_notional:
+        return
+
     market_id = target_pos.market if target_pos.market else target_pos.outcome
     await executor.place_order(
         asset_id=asset_id,
@@ -292,6 +295,7 @@ async def process_event(
         target_tx=event.get("tx_hash") or "unknown",
         current_market_exposure=notional,
         current_portfolio_exposure=portfolio_notional,
+        order_type="market",
     )
     await position_tracker.apply_our_execution(
         asset_id=asset_id,
@@ -333,7 +337,7 @@ async def consume_events(
             continue
         try:
             # Coalesce backlog items in the consumer; this loop is single-consumer so we have a consistent snapshot.
-            event = await _coalesce_events(event, queue)
+            event = await _coalesce_events(event, queue, recorder=recorder, live_view=live_view)
             await process_event(
                 event=event,
                 settings=settings,
@@ -440,7 +444,10 @@ async def main_async(argv: list[str] | None = None) -> None:
     data_api = DataAPIClient(settings.data_api_url, settings.api_key)  # type: ignore[arg-type]
     risk_limits = RiskLimits.from_settings(settings)
     intent_store = IntentStore(settings.db_path)
-    market_status_checker = MarketStatusChecker(settings.clob_rest_url, chain_id=settings.chain_id)
+    market_status_checker = MarketStatusChecker(
+        settings.gamma_api_url,
+        ttl_seconds=settings.http_poll_interval * MARKET_STATUS_TTL_MULTIPLIER,
+    )
     executor = ExecutionEngine(
         rest_url=settings.clob_rest_url,
         api_key=settings.api_key,  # type: ignore[arg-type]

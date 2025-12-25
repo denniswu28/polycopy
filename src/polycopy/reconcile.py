@@ -119,6 +119,7 @@ async def reconcile_once(
                 target_tx="reconcile",
                 current_market_exposure=notional,
                 current_portfolio_exposure=notional,
+                order_type="limit",
             )
             
             if position_tracker:

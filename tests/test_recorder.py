@@ -16,13 +16,16 @@ async def test_recorder_dedupes_trades_and_positions(tmp_path):
     recorder = TargetCsvRecorder(trades_path=trades_path, positions_path=positions_path)
 
     event = {
-        "tx_hash": "0xtx",
-        "asset_id": "asset1",
-        "size": 1.0,
+        "asset_id": "0x1234",
+        "market": "0xMarket",
+        "outcome": "Yes",
         "price": 0.5,
-        "outcome": "YES",
-        "market": "m1",
-        "is_buy": True,
+        "size": 15.0,
+        "side": "BUY",
+        "timestamp": 1000,
+        "tx_hash": "0xTx",
+        "maker_address": "0xMaker",
+        "taker_address": "0xTaker",
     }
     await recorder.record_trade(event)
     await recorder.record_trade(event)  # duplicate
@@ -37,7 +40,7 @@ async def test_recorder_dedupes_trades_and_positions(tmp_path):
     with trades_path.open() as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
-    assert rows[0]["tx_hash"] == "0xtx"
+    assert rows[0]["tx_hash"] == "0xTx"
 
     with positions_path.open() as handle:
         pos_rows = list(csv.DictReader(handle))
@@ -46,7 +49,7 @@ async def test_recorder_dedupes_trades_and_positions(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_process_event_records_trades_and_positions(tmp_path):
+async def test_process_event_records_positions(tmp_path):
     settings = Settings(
         private_key="0xkey",
         target_wallet="0xtarget",
@@ -66,7 +69,7 @@ async def test_process_event_records_trades_and_positions(tmp_path):
 
     event = {
         "asset_id": "asset1",
-        "size": 1.0,
+        "size": 15.0,
         "price": 0.55,
         "outcome": "YES",
         "market": "m1",
@@ -85,10 +88,8 @@ async def test_process_event_records_trades_and_positions(tmp_path):
     )
 
     executor.place_order.assert_awaited_once()
-    with (tmp_path / "trades.csv").open() as handle:
-        trades = list(csv.DictReader(handle))
-    assert len(trades) == 1
-    assert trades[0]["tx_hash"] == "0xtx123"
+    # process_event no longer records trades (done in _coalesce_events)
+    assert not (tmp_path / "trades.csv").exists()
 
     with (tmp_path / "positions.csv").open() as handle:
         positions = list(csv.DictReader(handle))

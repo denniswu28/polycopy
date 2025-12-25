@@ -4,20 +4,31 @@ from polycopy.config import PROJECT_ROOT, Settings, load_settings
 
 
 def test_load_settings_surfaces_missing_required(monkeypatch, capsys):
-    required_fields: list[str] = []
-    for name, field in Settings.model_fields.items():
-        if callable(getattr(field, "is_required", None)) and field.is_required():
-            required_fields.append(name)
-    for env_var in (field.upper() for field in required_fields):
-        monkeypatch.delenv(env_var, raising=False)
+    # Hide .env file if it exists
+    env_path = PROJECT_ROOT / ".env"
+    original_contents = None
+    if env_path.exists():
+        original_contents = env_path.read_text()
+        env_path.unlink()
 
-    with pytest.raises(SystemExit):
-        load_settings([])
+    try:
+        required_fields: list[str] = []
+        for name, field in Settings.model_fields.items():
+            if callable(getattr(field, "is_required", None)) and field.is_required():
+                required_fields.append(name)
+        for env_var in (field.upper() for field in required_fields):
+            monkeypatch.delenv(env_var, raising=False)
 
-    err = capsys.readouterr().err
-    assert "Missing required settings" in err
-    for field in required_fields:
-        assert field in err
+        with pytest.raises(SystemExit):
+            load_settings([])
+
+        err = capsys.readouterr().err
+        assert "Missing required settings" in err
+        for field in required_fields:
+            assert field in err
+    finally:
+        if original_contents is not None:
+            env_path.write_text(original_contents)
 
 
 def test_load_settings_reads_project_env_when_cwd_differs(monkeypatch, tmp_path):
