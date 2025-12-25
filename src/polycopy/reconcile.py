@@ -54,11 +54,22 @@ async def reconcile_once(
 
         target_positions = await _filter_active(target_positions)
         our_positions = await _filter_active(our_positions)
+    if risk_limits.blacklist_markets:
+        target_positions.positions = {
+            aid: pos for aid, pos in target_positions.positions.items() if pos.market not in risk_limits.blacklist_markets
+        }
+        our_positions.positions = {
+            aid: pos for aid, pos in our_positions.positions.items() if pos.market not in risk_limits.blacklist_markets
+        }
 
     if position_tracker:
         # If dry_run, we don't want to overwrite our simulated positions with empty/stale data
         # unless we want to sync with something. Here we assume dry_run maintains its own state.
-        await position_tracker.replace(target_state=target_positions, our_state=our_positions if not dry_run else None)
+        await position_tracker.replace(
+            target_state=target_positions,
+            our_state=our_positions if not dry_run else None,
+            reconcile_ts=time.time(),
+        )
 
     if live_view:
         live_view.update_positions(target=target_positions, ours=our_positions)
